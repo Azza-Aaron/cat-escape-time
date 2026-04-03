@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { playMenuMusic } from "../audio/gameAudio";
+import { getMobileUiScale } from "../mobileLayout";
 import { startCatMouseDemo } from "../game/catMouseDemo";
 
 export class MenuScene extends Phaser.Scene {
@@ -9,15 +10,16 @@ export class MenuScene extends Phaser.Scene {
 
   create(): void {
     const { width, height } = this.scale;
+    const s = getMobileUiScale(this);
 
-    const menuX = width * 0.34;
-    const catX = width * 0.76;
+    const menuX = width < 560 ? width * 0.5 : width * 0.34;
+    const catX = width < 560 ? width * 0.5 : width * 0.76;
     const catY = height * 0.52;
 
     this.add
       .text(menuX, height * 0.2, "Cat Escape Time!", {
         fontFamily: "Georgia, serif",
-        fontSize: "40px",
+        fontSize: `${Math.round(40 * s)}px`,
         color: "#f4e4bc",
       })
       .setOrigin(0.5);
@@ -25,18 +27,19 @@ export class MenuScene extends Phaser.Scene {
     this.add
       .text(menuX, height * 0.32, "Climb. Survive. Escape the window.", {
         fontFamily: "sans-serif",
-        fontSize: "15px",
+        fontSize: `${Math.round(15 * s)}px`,
         color: "#aaaaaa",
+        wordWrap: { width: width - 24 },
       })
       .setOrigin(0.5);
 
     const play = this.add
       .text(menuX, height * 0.48, "Play", {
         fontFamily: "sans-serif",
-        fontSize: "26px",
+        fontSize: `${Math.round(26 * s)}px`,
         color: "#7cfc00",
         backgroundColor: "#2a4a2a",
-        padding: { x: 22, y: 11 },
+        padding: { x: Math.round(22 * s), y: Math.round(11 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -48,10 +51,10 @@ export class MenuScene extends Phaser.Scene {
     const scores = this.add
       .text(menuX, height * 0.6, "Scoreboard", {
         fontFamily: "sans-serif",
-        fontSize: "22px",
+        fontSize: `${Math.round(22 * s)}px`,
         color: "#87ceeb",
         backgroundColor: "#1a3a4a",
-        padding: { x: 18, y: 9 },
+        padding: { x: Math.round(18 * s), y: Math.round(9 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -67,10 +70,10 @@ export class MenuScene extends Phaser.Scene {
     const settings = this.add
       .text(menuX, height * 0.68, "Settings", {
         fontFamily: "sans-serif",
-        fontSize: "22px",
+        fontSize: `${Math.round(22 * s)}px`,
         color: "#d4c4e8",
         backgroundColor: "#3a3550",
-        padding: { x: 18, y: 9 },
+        padding: { x: Math.round(18 * s), y: Math.round(9 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -83,7 +86,7 @@ export class MenuScene extends Phaser.Scene {
     );
     settings.on("pointerdown", () => this.scene.start("SettingsScene"));
 
-    startCatMouseDemo(this, catX, catY, 1.48, 380);
+    startCatMouseDemo(this, catX, catY, 1.48 * s, 380);
     playMenuMusic(this);
   }
 }

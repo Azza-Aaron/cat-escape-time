@@ -1,6 +1,7 @@
 import Phaser from "phaser";
-import { playMenuMusic } from "../audio/gameAudio";
 import { fetchHighScores } from "../api/highScores";
+import { playMenuMusic } from "../audio/gameAudio";
+import { getMobileUiScale } from "../mobileLayout";
 
 export class ScoreboardScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
@@ -11,11 +12,12 @@ export class ScoreboardScene extends Phaser.Scene {
 
   create(): void {
     const { width, height } = this.scale;
+    const s = getMobileUiScale(this);
 
     this.add
       .text(width / 2, 48, "Top 5 Scores", {
         fontFamily: "Georgia, serif",
-        fontSize: "32px",
+        fontSize: `${Math.round(32 * s)}px`,
         color: "#f4e4bc",
       })
       .setOrigin(0.5);
@@ -23,18 +25,19 @@ export class ScoreboardScene extends Phaser.Scene {
     this.statusText = this.add
       .text(width / 2, height * 0.35, "Loading…", {
         fontFamily: "monospace",
-        fontSize: "18px",
+        fontSize: `${Math.round(18 * s)}px`,
         color: "#cccccc",
+        wordWrap: { width: width - 24 },
       })
       .setOrigin(0.5);
 
     const back = this.add
       .text(width / 2, height - 48, "Back to Menu", {
         fontFamily: "sans-serif",
-        fontSize: "20px",
+        fontSize: `${Math.round(20 * s)}px`,
         color: "#ffffff",
         backgroundColor: "#444466",
-        padding: { x: 16, y: 8 },
+        padding: { x: Math.round(16 * s), y: Math.round(8 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });

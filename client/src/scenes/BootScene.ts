@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 import { preloadGameAudio } from "../audio/gameAudio";
 import { startCatMouseDemo } from "../game/catMouseDemo";
+import { getMobileUiScale } from "../mobileLayout";
 
 /** Match game width in main.ts; platforms use 90% of this. */
 export const GAME_WIDTH = 960;
@@ -670,14 +671,14 @@ export class BootScene extends Phaser.Scene {
 
   private showLoadingScreen(): void {
     const { width, height } = this.scale;
-
-    const leftX = width * 0.26;
-    const rightX = width * 0.72;
+    const s = getMobileUiScale(this);
+    const leftX = width < 560 ? width * 0.5 : width * 0.26;
+    const rightX = width < 560 ? width * 0.5 : width * 0.72;
 
     this.add
       .text(leftX, height * 0.22, "Cat Escape Time!", {
         fontFamily: "Georgia, serif",
-        fontSize: "36px",
+        fontSize: `${Math.round(36 * s)}px`,
         color: "#f4e4bc",
       })
       .setOrigin(0.5);
@@ -685,13 +686,13 @@ export class BootScene extends Phaser.Scene {
     const loading = this.add
       .text(leftX, height * 0.42, "Loading…", {
         fontFamily: "sans-serif",
-        fontSize: "22px",
+        fontSize: `${Math.round(22 * s)}px`,
         color: "#aaaaaa",
       })
       .setOrigin(0.5);
 
     const cy = height * 0.52;
-    startCatMouseDemo(this, rightX, cy, 1.65, 520);
+    startCatMouseDemo(this, rightX, cy, 1.65 * s, 520);
 
     this.tweens.add({
       targets: loading,

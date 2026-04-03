@@ -6,6 +6,7 @@ import {
   setSfxEnabled,
 } from "../audio/audioSettings";
 import { playMenuMusic, stopMenuMusic } from "../audio/gameAudio";
+import { getMobileUiScale } from "../mobileLayout";
 
 export class SettingsScene extends Phaser.Scene {
   constructor() {
@@ -14,12 +15,13 @@ export class SettingsScene extends Phaser.Scene {
 
   create(): void {
     const { width, height } = this.scale;
-    const menuX = width * 0.34;
+    const s = getMobileUiScale(this);
+    const menuX = width < 560 ? width * 0.5 : width * 0.34;
 
     this.add
       .text(menuX, height * 0.18, "Settings", {
         fontFamily: "Georgia, serif",
-        fontSize: "36px",
+        fontSize: `${Math.round(36 * s)}px`,
         color: "#f4e4bc",
       })
       .setOrigin(0.5);
@@ -27,7 +29,7 @@ export class SettingsScene extends Phaser.Scene {
     this.add
       .text(menuX, height * 0.3, "Sound", {
         fontFamily: "sans-serif",
-        fontSize: "20px",
+        fontSize: `${Math.round(20 * s)}px`,
         color: "#aaaaaa",
       })
       .setOrigin(0.5);
@@ -38,10 +40,10 @@ export class SettingsScene extends Phaser.Scene {
     const musicLabel = this.add
       .text(menuX, height * 0.4, "", {
         fontFamily: "sans-serif",
-        fontSize: "22px",
+        fontSize: `${Math.round(22 * s)}px`,
         color: "#ffffff",
         backgroundColor: "#3a3a55",
-        padding: { x: 20, y: 10 },
+        padding: { x: Math.round(20 * s), y: Math.round(10 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -49,10 +51,10 @@ export class SettingsScene extends Phaser.Scene {
     const sfxLabel = this.add
       .text(menuX, height * 0.52, "", {
         fontFamily: "sans-serif",
-        fontSize: "22px",
+        fontSize: `${Math.round(22 * s)}px`,
         color: "#ffffff",
         backgroundColor: "#3a3a55",
-        padding: { x: 20, y: 10 },
+        padding: { x: Math.round(20 * s), y: Math.round(10 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -95,10 +97,10 @@ export class SettingsScene extends Phaser.Scene {
     const back = this.add
       .text(menuX, height * 0.72, "Back to Menu", {
         fontFamily: "sans-serif",
-        fontSize: "22px",
+        fontSize: `${Math.round(22 * s)}px`,
         color: "#ffffff",
         backgroundColor: "#444466",
-        padding: { x: 18, y: 9 },
+        padding: { x: Math.round(18 * s), y: Math.round(9 * s) },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });

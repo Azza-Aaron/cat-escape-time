@@ -6,6 +6,10 @@ import {
   stopMenuMusic,
 } from "../audio/gameAudio";
 import { submitHighScore } from "../api/highScores";
+import {
+  getMobileUiScale,
+  useMobileControls,
+} from "../mobileLayout";
 import { GAME_WIDTH, PLATFORM_WIDTH } from "./BootScene";
 
 const PLATFORM_COUNT = 6;
@@ -101,8 +105,14 @@ export class PlayScene extends Phaser.Scene {
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyShift!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
-  private isTouchDevice = false;
-  private touchControls?: Phaser.GameObjects.Container;
+  private useMobileTouch = false;
+  /** Drag-pad pointer id; null when not dragging. */
+  private stickPointerId: number | null = null;
+  private stickCenterX = 0;
+  private stickCenterY = 0;
+  private readonly stickDead = 34;
+  private touchZones: Phaser.GameObjects.GameObject[] = [];
+  private touchInputCleanups: (() => void)[] = [];
   private touchLeftDown = false;
   private touchRightDown = false;
   private touchUpDown = false;
@@ -189,18 +199,18 @@ export class PlayScene extends Phaser.Scene {
     this.gameOverHandled = false;
     this.lastSafePlatIdx = 0;
     this.meowLastPlatformIdx = null;
-    this.isTouchDevice = this.sys.game.device.input.touch;
+    this.useMobileTouch = useMobileControls();
 
     stopMenuMusic();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       stopLevelMusic();
+      this.scale.off("resize", this.onPlayResize, this);
+      this.destroyTouchControls();
     });
 
     this.physics.world.setBounds(0, 0, this.worldW, this.worldH);
     this.physics.world.setBoundsCollision(true, true, true, false);
-    if (this.isTouchDevice) {
-      this.input.addPointer(2);
-    }
+    this.scale.on("resize", this.onPlayResize, this);
 
     this.platforms = this.physics.add.staticGroup();
     this.dogs = this.physics.add.group({ runChildUpdate: true });
@@ -305,7 +315,7 @@ export class PlayScene extends Phaser.Scene {
         }
       }
     }
-    if (this.isTouchDevice) {
+    if (this.useMobileTouch) {
       this.createTouchControls();
     }
 
@@ -324,16 +334,14 @@ export class PlayScene extends Phaser.Scene {
       },
     });
 
-    const panelX = 16;
-    const panelY = this.scale.height - 124;
     this.hudBottomPanel = this.add
-      .rectangle(panelX, panelY, 250, 108, 0x111827, 0.78)
+      .rectangle(0, 0, 250, 108, 0x111827, 0.78)
       .setOrigin(0, 0)
       .setStrokeStyle(2, 0x6d7f99, 0.9)
       .setScrollFactor(0)
       .setDepth(880);
     this.hudScore = this.add
-      .text(panelX + 14, panelY + 12, "", {
+      .text(0, 0, "", {
         fontSize: "20px",
         color: "#f4f7ff",
         fontStyle: "bold",
@@ -341,7 +349,7 @@ export class PlayScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(881);
     this.hudLives = this.add
-      .text(panelX + 14, panelY + 46, "", {
+      .text(0, 0, "", {
         fontSize: "20px",
         color: "#ff8c8c",
         fontStyle: "bold",
@@ -349,7 +357,7 @@ export class PlayScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(881);
     this.hudTimer = this.add
-      .text(panelX + 14, panelY + 78, "", {
+      .text(0, 0, "", {
         fontSize: "16px",
         color: "#ffd980",
       })
@@ -373,12 +381,59 @@ export class PlayScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(881);
 
+    this.layoutHud();
     this.updateHud();
     this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
     this.cameras.main.setDeadzone(120, 80);
 
     playLevelMusic(this, this.level);
+  }
+
+  private onPlayResize = (): void => {
+    this.layoutHud();
+    if (this.useMobileTouch) {
+      this.createTouchControls();
+    }
+  };
+
+  private layoutHud(): void {
+    const s = getMobileUiScale(this);
+    const w = this.scale.width;
+    const h = this.scale.height;
+    const mobile = this.useMobileTouch;
+    const bw = Math.round(250 * s);
+    const bh = Math.round(108 * s);
+    let panelX: number;
+    let panelY: number;
+    if (mobile) {
+      panelX = 12;
+      panelY = 56;
+    } else {
+      panelX = 16;
+      panelY = h - 124;
+    }
+    this.hudBottomPanel.setPosition(panelX, panelY).setSize(bw, bh);
+    const fs = Math.round(20 * s);
+    const fsSmall = Math.round(16 * s);
+    const pad = Math.round(14 * s);
+    this.hudScore
+      .setPosition(panelX + pad, panelY + Math.round(12 * s))
+      .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
+    this.hudLives
+      .setPosition(panelX + pad, panelY + Math.round(46 * s))
+      .setStyle({ fontSize: `${fs}px`, color: "#ff8c8c", fontStyle: "bold" });
+    this.hudTimer
+      .setPosition(panelX + pad, panelY + Math.round(78 * s))
+      .setStyle({ fontSize: `${fsSmall}px`, color: "#ffd980" });
+
+    const topCx = w / 2;
+    const topBarW = Math.min(Math.round(360 * s), w - 24);
+    const topBarH = Math.round(44 * s);
+    this.hudTopPanel.setPosition(topCx, Math.round(10 * s)).setSize(topBarW, topBarH).setOrigin(0.5, 0);
+    this.hudLevel
+      .setPosition(topCx, Math.round(18 * s))
+      .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
   }
 
   private keyDown(key?: Phaser.Input.Keyboard.Key): boolean {
@@ -431,60 +486,142 @@ export class PlayScene extends Phaser.Scene {
     return keyboardJump || touchJump;
   }
 
-  private createTouchControls(): void {
-    this.touchControls?.destroy(true);
-    this.touchControls = this.add.container(0, 0).setDepth(1200).setScrollFactor(0);
-    const h = this.scale.height;
-    const leftX = 76;
-    const rightX = this.scale.width - 76;
-    const bottomY = h - 76;
-    const midY = h - 142;
+  private destroyTouchControls(): void {
+    for (const fn of this.touchInputCleanups) {
+      fn();
+    }
+    this.touchInputCleanups = [];
+    this.stickPointerId = null;
+    this.clearStickDirections();
+    for (const z of this.touchZones) {
+      (z as Phaser.GameObjects.GameObject).destroy();
+    }
+    this.touchZones = [];
+  }
 
-    const makeHoldButton = (
+  private clearStickDirections(): void {
+    this.touchLeftDown = false;
+    this.touchRightDown = false;
+    this.touchUpDown = false;
+    this.touchDownDown = false;
+  }
+
+  private updateStickVector(pointer: Phaser.Input.Pointer): void {
+    if (this.qteActive) return;
+    const dx = pointer.x - this.stickCenterX;
+    const dy = pointer.y - this.stickCenterY;
+    const d = this.stickDead;
+    this.touchLeftDown = dx < -d;
+    this.touchRightDown = dx > d;
+    this.touchUpDown = dy < -d;
+    this.touchDownDown = dy > d;
+  }
+
+  private readonly onStickMove = (pointer: Phaser.Input.Pointer): void => {
+    if (this.qteActive) return;
+    if (!this.useMobileTouch || this.stickPointerId === null || pointer.id !== this.stickPointerId) {
+      return;
+    }
+    this.updateStickVector(pointer);
+  };
+
+  private readonly onStickUp = (pointer: Phaser.Input.Pointer): void => {
+    if (this.stickPointerId === null || pointer.id !== this.stickPointerId) {
+      return;
+    }
+    this.stickPointerId = null;
+    this.clearStickDirections();
+  };
+
+  private createTouchControls(): void {
+    this.destroyTouchControls();
+    if (!this.useMobileTouch) return;
+
+    const w = this.scale.width;
+    const h = this.scale.height;
+    const s = getMobileUiScale(this);
+    const padW = Math.min(320 * s, w * 0.44);
+    const padH = Math.min(168 * s, h * 0.28);
+    this.stickCenterX = padW / 2 + 14;
+    this.stickCenterY = h - padH / 2 - 14;
+
+    const padBg = this.add.rectangle(
+      this.stickCenterX,
+      this.stickCenterY,
+      padW,
+      padH,
+      0x1a2a3a,
+      0.38
+    );
+    padBg.setStrokeStyle(2, 0x4a6a8a, 0.65);
+    padBg.setScrollFactor(0).setDepth(1190).setOrigin(0.5);
+    this.touchZones.push(padBg);
+
+    padBg.setInteractive({ useHandCursor: false });
+    padBg.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      if (this.qteActive) return;
+      if (this.stickPointerId !== null) return;
+      this.stickPointerId = pointer.id;
+      this.updateStickVector(pointer);
+    });
+
+    this.input.on("pointermove", this.onStickMove);
+    this.input.on("pointerup", this.onStickUp);
+    this.input.on("pointerupoutside", this.onStickUp);
+    this.touchInputCleanups.push(() => this.input.off("pointermove", this.onStickMove));
+    this.touchInputCleanups.push(() => this.input.off("pointerup", this.onStickUp));
+    this.touchInputCleanups.push(() => this.input.off("pointerupoutside", this.onStickUp));
+
+    const hint = this.add
+      .text(this.stickCenterX, this.stickCenterY, "drag", {
+        fontFamily: "sans-serif",
+        fontSize: `${Math.round(14 * s)}px`,
+        color: "#8899aa",
+      })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(1191);
+    this.touchZones.push(hint);
+
+    const btnY = h - Math.round(52 * s);
+    const runX = w - Math.round(72 * s);
+    const jumpX = w - Math.round(200 * s);
+    const px = Math.round(18 * s);
+    const py = Math.round(12 * s);
+
+    const mkHoldBtn = (
       x: number,
       y: number,
       label: string,
-      color: string,
+      bg: string,
       onChange: (down: boolean) => void
-    ): Phaser.GameObjects.Text => {
+    ): void => {
       const t = this.add
         .text(x, y, label, {
           fontFamily: "sans-serif",
-          fontSize: "28px",
+          fontSize: `${Math.round(22 * s)}px`,
           color: "#ffffff",
-          backgroundColor: color,
-          padding: { x: 16, y: 10 },
+          backgroundColor: bg,
+          padding: { x: px, y: py },
         })
         .setOrigin(0.5)
-        .setAlpha(0.82)
+        .setScrollFactor(0)
+        .setDepth(1192)
         .setInteractive({ useHandCursor: true });
-      const release = () => onChange(false);
+      const release = (): void => onChange(false);
       t.on("pointerdown", () => onChange(true));
       t.on("pointerup", release);
       t.on("pointerout", release);
       t.on("pointerupoutside", release);
-      this.touchControls?.add(t);
-      return t;
+      this.touchZones.push(t);
     };
 
-    makeHoldButton(leftX - 54, bottomY, "◀", "#243a52", (down) => {
-      this.touchLeftDown = down;
-    });
-    makeHoldButton(leftX + 54, bottomY, "▶", "#243a52", (down) => {
-      this.touchRightDown = down;
-    });
-    makeHoldButton(rightX, midY, "▲", "#2f3f2a", (down) => {
-      this.touchUpDown = down;
-    });
-    makeHoldButton(rightX, bottomY, "▼", "#2f3f2a", (down) => {
-      this.touchDownDown = down;
-    });
-    makeHoldButton(rightX - 88, bottomY - 34, "JUMP", "#4a304a", (down) => {
-      if (down) this.touchJumpQueued = true;
-    }).setFontSize("18px");
-    makeHoldButton(leftX, midY, "RUN", "#5a4526", (down) => {
+    mkHoldBtn(runX, btnY, "RUN", "#5a4526", (down) => {
       this.touchSprintDown = down;
-    }).setFontSize("18px");
+    });
+    mkHoldBtn(jumpX, btnY, "JUMP", "#4a304a", (down) => {
+      if (down) this.touchJumpQueued = true;
+    });
   }
 
   private clearMobileQteChoices(): void {
@@ -496,16 +633,21 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private ensureMobileQteChoices(): void {
-    if (!this.isTouchDevice || !this.qteContainer || !this.qteActive) return;
+    if (!this.useMobileTouch || !this.qteContainer || !this.qteActive) return;
+    const s = getMobileUiScale(this);
+    const gap = Math.round(118 * s);
+    const fs = Math.round(34 * s);
+    const padX = Math.round(22 * s);
+    const padY = Math.round(12 * s);
     if (this.mobileQteChoiceTexts.length === 0) {
       for (let i = 0; i < 3; i++) {
         const choice = this.add
-          .text((i - 1) * 118, 116, "A", {
+          .text((i - 1) * gap, Math.round(116 * s), "A", {
             fontFamily: "sans-serif",
-            fontSize: "34px",
+            fontSize: `${fs}px`,
             color: "#ffffff",
             backgroundColor: "#28445a",
-            padding: { x: 22, y: 12 },
+            padding: { x: padX, y: padY },
           })
           .setOrigin(0.5)
           .setInteractive({ useHandCursor: true });
@@ -941,6 +1083,8 @@ export class PlayScene extends Phaser.Scene {
 
   private startQte(): void {
     if (this.qteActive) return;
+    this.stickPointerId = null;
+    this.clearStickDirections();
     this.qteActive = true;
     playSfx(this, "sfx_qte", 0.5);
     this.clearIdleMousePlay();
@@ -959,10 +1103,13 @@ export class PlayScene extends Phaser.Scene {
     this.qteContainer.setScrollFactor(0);
     this.qteContainer.setDepth(1000);
 
-    const bg = this.add.rectangle(0, 0, 420, 160, 0x111122, 0.92);
+    const qs = Math.min(getMobileUiScale(this), 1.35);
+    const bgW = Math.round(420 * qs);
+    const bgH = Math.round(200 * qs);
+    const bg = this.add.rectangle(0, 0, bgW, bgH, 0x111122, 0.92);
     bg.setStrokeStyle(3, 0x88ff88);
     this.qteText = this.add.text(0, 0, "", {
-      fontSize: "36px",
+      fontSize: `${Math.round(36 * qs)}px`,
       color: "#ffffff",
       fontFamily: "monospace",
     });
@@ -1023,10 +1170,10 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private completeQte(success: boolean): void {
+    this.clearMobileQteChoices();
     this.qteContainer?.destroy(true);
     this.qteContainer = undefined;
     this.qteText = undefined;
-    this.clearMobileQteChoices();
     this.qteActive = false;
 
     this.physics.world.resume();

@@ -11,6 +11,9 @@ new Phaser.Game({
   width: GAME_WIDTH,
   height: 640,
   backgroundColor: "#1a1a2e",
+  input: {
+    activePointers: 4,
+  },
   physics: {
     default: "arcade",
     arcade: {
