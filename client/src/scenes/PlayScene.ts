@@ -101,6 +101,14 @@ export class PlayScene extends Phaser.Scene {
   private keyS!: Phaser.Input.Keyboard.Key;
   private keyShift!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
+  private isTouchDevice = false;
+  private touchControls?: Phaser.GameObjects.Container;
+  private touchLeftDown = false;
+  private touchRightDown = false;
+  private touchUpDown = false;
+  private touchDownDown = false;
+  private touchSprintDown = false;
+  private touchJumpQueued = false;
 
   /** After jumping off a ladder, ignore ladder overlap briefly */
   private ladderJumpGrace = 0;
@@ -133,6 +141,10 @@ export class PlayScene extends Phaser.Scene {
   private qteDeadline = 0;
   private qteContainer?: Phaser.GameObjects.Container;
   private qteText?: Phaser.GameObjects.Text;
+  private mobileQteChoiceTexts: Phaser.GameObjects.Text[] = [];
+  private mobileQteChoices: string[] = [];
+  private mobileQteChoiceStep = -1;
+  private mobileQteTapped?: string;
 
   private hudTimer!: Phaser.GameObjects.Text;
   private hudLevel!: Phaser.GameObjects.Text;
@@ -177,6 +189,7 @@ export class PlayScene extends Phaser.Scene {
     this.gameOverHandled = false;
     this.lastSafePlatIdx = 0;
     this.meowLastPlatformIdx = null;
+    this.isTouchDevice = this.sys.game.device.input.touch;
 
     stopMenuMusic();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -185,6 +198,9 @@ export class PlayScene extends Phaser.Scene {
 
     this.physics.world.setBounds(0, 0, this.worldW, this.worldH);
     this.physics.world.setBoundsCollision(true, true, true, false);
+    if (this.isTouchDevice) {
+      this.input.addPointer(2);
+    }
 
     this.platforms = this.physics.add.staticGroup();
     this.dogs = this.physics.add.group({ runChildUpdate: true });
@@ -289,6 +305,9 @@ export class PlayScene extends Phaser.Scene {
         }
       }
     }
+    if (this.isTouchDevice) {
+      this.createTouchControls();
+    }
 
     this.timerEvent = this.time.addEvent({
       delay: 1000,
@@ -360,6 +379,155 @@ export class PlayScene extends Phaser.Scene {
     this.cameras.main.setDeadzone(120, 80);
 
     playLevelMusic(this, this.level);
+  }
+
+  private keyDown(key?: Phaser.Input.Keyboard.Key): boolean {
+    return !!key?.isDown;
+  }
+
+  private justPressed(key?: Phaser.Input.Keyboard.Key): boolean {
+    return !!key && Phaser.Input.Keyboard.JustDown(key);
+  }
+
+  private leftPressed(): boolean {
+    return (
+      this.touchLeftDown ||
+      this.keyDown(this.keyA) ||
+      this.keyDown(this.cursors?.left)
+    );
+  }
+
+  private rightPressed(): boolean {
+    return (
+      this.touchRightDown ||
+      this.keyDown(this.keyD) ||
+      this.keyDown(this.cursors?.right)
+    );
+  }
+
+  private upPressed(): boolean {
+    return (
+      this.touchUpDown ||
+      this.keyDown(this.keyW) ||
+      this.keyDown(this.cursors?.up)
+    );
+  }
+
+  private downPressed(): boolean {
+    return (
+      this.touchDownDown ||
+      this.keyDown(this.keyS) ||
+      this.keyDown(this.cursors?.down)
+    );
+  }
+
+  private consumeJumpPress(): boolean {
+    const keyboardJump =
+      this.justPressed(this.keySpace) ||
+      this.justPressed(this.keyW) ||
+      this.justPressed(this.cursors?.up);
+    const touchJump = this.touchJumpQueued;
+    this.touchJumpQueued = false;
+    return keyboardJump || touchJump;
+  }
+
+  private createTouchControls(): void {
+    this.touchControls?.destroy(true);
+    this.touchControls = this.add.container(0, 0).setDepth(1200).setScrollFactor(0);
+    const h = this.scale.height;
+    const leftX = 76;
+    const rightX = this.scale.width - 76;
+    const bottomY = h - 76;
+    const midY = h - 142;
+
+    const makeHoldButton = (
+      x: number,
+      y: number,
+      label: string,
+      color: string,
+      onChange: (down: boolean) => void
+    ): Phaser.GameObjects.Text => {
+      const t = this.add
+        .text(x, y, label, {
+          fontFamily: "sans-serif",
+          fontSize: "28px",
+          color: "#ffffff",
+          backgroundColor: color,
+          padding: { x: 16, y: 10 },
+        })
+        .setOrigin(0.5)
+        .setAlpha(0.82)
+        .setInteractive({ useHandCursor: true });
+      const release = () => onChange(false);
+      t.on("pointerdown", () => onChange(true));
+      t.on("pointerup", release);
+      t.on("pointerout", release);
+      t.on("pointerupoutside", release);
+      this.touchControls?.add(t);
+      return t;
+    };
+
+    makeHoldButton(leftX - 54, bottomY, "◀", "#243a52", (down) => {
+      this.touchLeftDown = down;
+    });
+    makeHoldButton(leftX + 54, bottomY, "▶", "#243a52", (down) => {
+      this.touchRightDown = down;
+    });
+    makeHoldButton(rightX, midY, "▲", "#2f3f2a", (down) => {
+      this.touchUpDown = down;
+    });
+    makeHoldButton(rightX, bottomY, "▼", "#2f3f2a", (down) => {
+      this.touchDownDown = down;
+    });
+    makeHoldButton(rightX - 88, bottomY - 34, "JUMP", "#4a304a", (down) => {
+      if (down) this.touchJumpQueued = true;
+    }).setFontSize("18px");
+    makeHoldButton(leftX, midY, "RUN", "#5a4526", (down) => {
+      this.touchSprintDown = down;
+    }).setFontSize("18px");
+  }
+
+  private clearMobileQteChoices(): void {
+    this.mobileQteChoiceTexts.forEach((t) => t.destroy());
+    this.mobileQteChoiceTexts = [];
+    this.mobileQteChoices = [];
+    this.mobileQteChoiceStep = -1;
+    this.mobileQteTapped = undefined;
+  }
+
+  private ensureMobileQteChoices(): void {
+    if (!this.isTouchDevice || !this.qteContainer || !this.qteActive) return;
+    if (this.mobileQteChoiceTexts.length === 0) {
+      for (let i = 0; i < 3; i++) {
+        const choice = this.add
+          .text((i - 1) * 118, 116, "A", {
+            fontFamily: "sans-serif",
+            fontSize: "34px",
+            color: "#ffffff",
+            backgroundColor: "#28445a",
+            padding: { x: 22, y: 12 },
+          })
+          .setOrigin(0.5)
+          .setInteractive({ useHandCursor: true });
+        choice.on("pointerdown", () => {
+          this.mobileQteTapped = this.mobileQteChoices[i];
+        });
+        this.mobileQteChoiceTexts.push(choice);
+      }
+      this.qteContainer.add(this.mobileQteChoiceTexts);
+    }
+    if (this.mobileQteChoiceStep === this.qteIndex) return;
+    const expected = this.qteLetters[this.qteIndex] ?? "A";
+    const pool = LETTERS.split("").filter((ch) => ch !== expected);
+    const decoyA = Phaser.Utils.Array.GetRandom(pool) ?? "B";
+    const decoyB = Phaser.Utils.Array.GetRandom(
+      pool.filter((ch) => ch !== decoyA)
+    ) ?? "C";
+    this.mobileQteChoices = Phaser.Utils.Array.Shuffle([expected, decoyA, decoyB]);
+    for (let i = 0; i < this.mobileQteChoiceTexts.length; i++) {
+      this.mobileQteChoiceTexts[i]!.setText(this.mobileQteChoices[i] ?? "?");
+    }
+    this.mobileQteChoiceStep = this.qteIndex;
   }
 
   /** One-way: pass through only when moving up from below the deck (not every upward velocity). */
@@ -805,6 +973,7 @@ export class PlayScene extends Phaser.Scene {
     this.spawnHairEffect();
 
     this.refreshQteDisplay();
+    this.ensureMobileQteChoices();
   }
 
   private refreshQteDisplay(): void {
@@ -812,6 +981,7 @@ export class PlayScene extends Phaser.Scene {
     const cur = this.qteLetters[this.qteIndex] ?? "?";
     const rest = this.qteLetters.slice(this.qteIndex + 1).join(" ");
     this.qteText.setText(`Press: ${cur}\nNext: ${rest}\n\n${Math.max(0, Math.ceil((this.qteDeadline - this.time.now) / 1000))}s`);
+    this.ensureMobileQteChoices();
   }
 
   private spawnHairEffect(): void {
@@ -856,6 +1026,7 @@ export class PlayScene extends Phaser.Scene {
     this.qteContainer?.destroy(true);
     this.qteContainer = undefined;
     this.qteText = undefined;
+    this.clearMobileQteChoices();
     this.qteActive = false;
 
     this.physics.world.resume();
@@ -1143,16 +1314,13 @@ export class PlayScene extends Phaser.Scene {
       return;
     }
     const input =
-      this.keyA.isDown ||
-      this.keyD.isDown ||
-      this.keyW.isDown ||
-      this.keyS.isDown ||
-      this.keySpace.isDown ||
-      this.cursors.left.isDown ||
-      this.cursors.right.isDown ||
-      this.cursors.up.isDown ||
-      this.cursors.down.isDown ||
-      (this.keyShift?.isDown ?? false);
+      this.leftPressed() ||
+      this.rightPressed() ||
+      this.upPressed() ||
+      this.downPressed() ||
+      this.keyDown(this.keySpace) ||
+      this.touchSprintDown ||
+      this.keyDown(this.keyShift);
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     if (
       moving ||
@@ -1315,7 +1483,7 @@ export class PlayScene extends Phaser.Scene {
     this.catchNearbyPickups();
     this.checkFallDeath();
 
-    const sprint = this.keyShift?.isDown ?? false;
+    const sprint = this.touchSprintDown || this.keyDown(this.keyShift);
     this.applyMoveCaps(sprint);
     this.updateLadderState();
     this.updatePlayerMovement(sprint);
@@ -1325,16 +1493,10 @@ export class PlayScene extends Phaser.Scene {
     const moving =
       Math.abs(body.velocity.x) > 28 ||
       (grounded &&
-        (this.keyA.isDown ||
-          this.keyD.isDown ||
-          this.cursors.left.isDown ||
-          this.cursors.right.isDown));
+        (this.leftPressed() || this.rightPressed()));
     const climbing =
       this.onLadder &&
-      (this.keyW.isDown ||
-        this.keyS.isDown ||
-        this.cursors.up.isDown ||
-        this.cursors.down.isDown);
+      (this.upPressed() || this.downPressed());
 
     if (time < this.disgustedUntil) {
       this.player.anims.stop();
@@ -1370,6 +1532,23 @@ export class PlayScene extends Phaser.Scene {
       this.completeQte(true);
       return;
     }
+    const tapped = this.mobileQteTapped;
+    this.mobileQteTapped = undefined;
+    if (tapped) {
+      if (tapped === expected) {
+        this.qteIndex += 1;
+        if (this.qteIndex >= this.qteLetters.length) {
+          this.completeQte(true);
+        } else {
+          this.qteDeadline = time + this.qteStepMs();
+          this.mobileQteChoiceStep = -1;
+        }
+      } else {
+        this.completeQte(false);
+      }
+      return;
+    }
+
     for (let i = 0; i < LETTERS.length; i++) {
       const ch = LETTERS[i]!;
       const key = this.letterKeys[ch];
@@ -1407,10 +1586,7 @@ export class PlayScene extends Phaser.Scene {
     const pr = new Phaser.Geom.Rectangle(bounds.x, bounds.y, bounds.width, bounds.height);
     const grounded = pbody.blocked.down || pbody.touching.down;
     const wantsLadderMove =
-      this.keyW.isDown ||
-      this.cursors.up.isDown ||
-      this.keyS.isDown ||
-      this.cursors.down.isDown;
+      this.upPressed() || this.downPressed();
     for (const seg of this.ladderZones) {
       if (!Phaser.Geom.Rectangle.Overlaps(pr, seg.rect)) continue;
       // Standing on a platform under a ladder overlaps the same rect; only climb when
@@ -1423,7 +1599,7 @@ export class PlayScene extends Phaser.Scene {
     }
 
     if (this.onLadder && current) {
-      if (Phaser.Input.Keyboard.JustDown(this.keySpace)) {
+      if (this.consumeJumpPress()) {
         this.ladderJumpGrace = 320;
         pbody.allowGravity = true;
         this.player.setVelocityX(0);
@@ -1434,8 +1610,8 @@ export class PlayScene extends Phaser.Scene {
       }
 
       pbody.allowGravity = false;
-      const up = this.keyW.isDown || this.cursors.up.isDown;
-      const down = this.keyS.isDown || this.cursors.down.isDown;
+      const up = this.upPressed();
+      const down = this.downPressed();
       let vy = 0;
       if (up) vy = -220;
       else if (down) vy = 220;
@@ -1534,12 +1710,9 @@ export class PlayScene extends Phaser.Scene {
   private updatePlayerMovement(sprint: boolean): void {
     if (this.onLadder) return;
 
-    const left = this.keyA.isDown || this.cursors.left.isDown;
-    const right = this.keyD.isDown || this.cursors.right.isDown;
-    const jump =
-      Phaser.Input.Keyboard.JustDown(this.keySpace) ||
-      Phaser.Input.Keyboard.JustDown(this.keyW) ||
-      Phaser.Input.Keyboard.JustDown(this.cursors.up);
+    const left = this.leftPressed();
+    const right = this.rightPressed();
+    const jump = this.consumeJumpPress();
 
     const accel = sprint ? 2600 : 1700;
     if (left) {
