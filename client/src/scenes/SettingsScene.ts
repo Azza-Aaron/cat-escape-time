@@ -7,6 +7,7 @@ import {
 } from "../audio/audioSettings";
 import { playMenuMusic, stopMenuMusic } from "../audio/gameAudio";
 import { getMobileUiScale } from "../mobileLayout";
+import { addFixedWidthMenuButton, menuButtonWidth } from "../menuUi";
 
 export class SettingsScene extends Phaser.Scene {
   constructor() {
@@ -16,97 +17,96 @@ export class SettingsScene extends Phaser.Scene {
   create(): void {
     const { width, height } = this.scale;
     const s = getMobileUiScale(this);
-    const menuX = width < 560 ? width * 0.5 : width * 0.34;
+    const cx = width / 2;
+    const btnW = menuButtonWidth(this);
+    const fs = Math.round(22 * s);
+    const rowGap = Math.round(12 * s);
+    const btnStep = Math.round(52 * s);
+
+    let y = height * 0.14;
 
     this.add
-      .text(menuX, height * 0.18, "Settings", {
+      .text(cx, y, "Settings", {
         fontFamily: "Georgia, serif",
         fontSize: `${Math.round(36 * s)}px`,
         color: "#f4e4bc",
       })
       .setOrigin(0.5);
 
+    y += Math.round(56 * s);
     this.add
-      .text(menuX, height * 0.3, "Sound", {
+      .text(cx, y, "Sound", {
         fontFamily: "sans-serif",
         fontSize: `${Math.round(20 * s)}px`,
         color: "#aaaaaa",
       })
       .setOrigin(0.5);
 
+    y += Math.round(48 * s);
+
     let musicOn = isMusicEnabled();
     let sfxOn = isSfxEnabled();
 
-    const musicLabel = this.add
-      .text(menuX, height * 0.4, "", {
-        fontFamily: "sans-serif",
-        fontSize: `${Math.round(22 * s)}px`,
-        color: "#ffffff",
-        backgroundColor: "#3a3a55",
-        padding: { x: Math.round(20 * s), y: Math.round(10 * s) },
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
+    const musicLabel = addFixedWidthMenuButton(this, cx, y, btnW, "", {
+      fontPx: fs,
+      textColor: "#ffffff",
+      bg: musicOn ? "#2a4a2a" : "#4a2a2a",
+      bgHover: "#3a3a55",
+    });
 
-    const sfxLabel = this.add
-      .text(menuX, height * 0.52, "", {
-        fontFamily: "sans-serif",
-        fontSize: `${Math.round(22 * s)}px`,
-        color: "#ffffff",
-        backgroundColor: "#3a3a55",
-        padding: { x: Math.round(20 * s), y: Math.round(10 * s) },
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-
-    const refreshLabels = (): void => {
+    const refreshMusicText = (): void => {
       musicLabel.setText(`Music: ${musicOn ? "On" : "Off"}`);
-      sfxLabel.setText(`Sound effects: ${sfxOn ? "On" : "Off"}`);
       musicLabel.setStyle({
         backgroundColor: musicOn ? "#2a4a2a" : "#4a2a2a",
       });
-      sfxLabel.setStyle({
-        backgroundColor: sfxOn ? "#2a4a2a" : "#4a2a2a",
-      });
     };
-
-    refreshLabels();
+    refreshMusicText();
 
     musicLabel.on("pointerdown", () => {
       musicOn = !musicOn;
       setMusicEnabled(musicOn);
       if (musicOn) playMenuMusic(this);
       else stopMenuMusic();
-      refreshLabels();
+      refreshMusicText();
     });
-    musicLabel.on("pointerover", () =>
-      musicLabel.setAlpha(0.92)
-    );
+    musicLabel.on("pointerover", () => musicLabel.setAlpha(0.92));
     musicLabel.on("pointerout", () => musicLabel.setAlpha(1));
+
+    y += btnStep + rowGap;
+
+    const sfxLabel = addFixedWidthMenuButton(this, cx, y, btnW, "", {
+      fontPx: fs,
+      textColor: "#ffffff",
+      bg: sfxOn ? "#2a4a2a" : "#4a2a2a",
+      bgHover: "#3a3a55",
+    });
+
+    const refreshSfxText = (): void => {
+      sfxLabel.setText(`Sound effects: ${sfxOn ? "On" : "Off"}`);
+      sfxLabel.setStyle({
+        backgroundColor: sfxOn ? "#2a4a2a" : "#4a2a2a",
+      });
+    };
+    refreshSfxText();
 
     sfxLabel.on("pointerdown", () => {
       sfxOn = !sfxOn;
       setSfxEnabled(sfxOn);
-      refreshLabels();
+      refreshSfxText();
     });
     sfxLabel.on("pointerover", () => sfxLabel.setAlpha(0.92));
     sfxLabel.on("pointerout", () => sfxLabel.setAlpha(1));
 
     playMenuMusic(this);
 
-    const back = this.add
-      .text(menuX, height * 0.72, "Back to Menu", {
-        fontFamily: "sans-serif",
-        fontSize: `${Math.round(22 * s)}px`,
-        color: "#ffffff",
-        backgroundColor: "#444466",
-        padding: { x: Math.round(18 * s), y: Math.round(9 * s) },
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
+    y += btnStep + Math.round(24 * s);
 
-    back.on("pointerover", () => back.setStyle({ backgroundColor: "#555577" }));
-    back.on("pointerout", () => back.setStyle({ backgroundColor: "#444466" }));
+    const back = addFixedWidthMenuButton(this, cx, y, btnW, "Back to Menu", {
+      fontPx: fs,
+      textColor: "#ffffff",
+      bg: "#444466",
+      bgHover: "#555577",
+    });
     back.on("pointerdown", () => this.scene.start("MenuScene"));
   }
 }

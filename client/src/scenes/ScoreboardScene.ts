@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import { fetchHighScores } from "../api/highScores";
 import { playMenuMusic } from "../audio/gameAudio";
 import { getMobileUiScale } from "../mobileLayout";
+import { addFixedWidthMenuButton, menuButtonWidth } from "../menuUi";
 
 export class ScoreboardScene extends Phaser.Scene {
   private statusText!: Phaser.GameObjects.Text;
@@ -31,17 +32,19 @@ export class ScoreboardScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    const back = this.add
-      .text(width / 2, height - 48, "Back to Menu", {
-        fontFamily: "sans-serif",
-        fontSize: `${Math.round(20 * s)}px`,
-        color: "#ffffff",
-        backgroundColor: "#444466",
-        padding: { x: Math.round(16 * s), y: Math.round(8 * s) },
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-
+    const back = addFixedWidthMenuButton(
+      this,
+      width / 2,
+      height - 52,
+      menuButtonWidth(this),
+      "Back to Menu",
+      {
+        fontPx: Math.round(20 * s),
+        textColor: "#ffffff",
+        bg: "#444466",
+        bgHover: "#555577",
+      }
+    );
     back.on("pointerdown", () => this.scene.start("MenuScene"));
 
     playMenuMusic(this);

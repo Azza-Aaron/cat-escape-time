@@ -151,6 +151,11 @@ export class PlayScene extends Phaser.Scene {
   private qteDeadline = 0;
   private qteContainer?: Phaser.GameObjects.Container;
   private qteText?: Phaser.GameObjects.Text;
+  /** Mobile QTE: subtitle and countdown (desktop uses single qteText). */
+  private qteHintText?: Phaser.GameObjects.Text;
+  private qteTimerLine?: Phaser.GameObjects.Text;
+  /** Scale factor used when building current QTE panel (for choice positions). */
+  private qteUiQs = 1;
   private mobileQteChoiceTexts: Phaser.GameObjects.Text[] = [];
   private mobileQteChoices: string[] = [];
   private mobileQteChoiceStep = -1;
@@ -385,13 +390,25 @@ export class PlayScene extends Phaser.Scene {
     this.updateHud();
     this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
-    this.cameras.main.setDeadzone(120, 80);
+    this.applyPlayCamera();
 
     playLevelMusic(this, this.level);
   }
 
+  /** Closer follow on mobile only; desktop keeps zoom 1 and original deadzone. */
+  private applyPlayCamera(): void {
+    if (this.useMobileTouch) {
+      this.cameras.main.setZoom(1.48);
+      this.cameras.main.setDeadzone(70, 56);
+    } else {
+      this.cameras.main.setZoom(1);
+      this.cameras.main.setDeadzone(120, 80);
+    }
+  }
+
   private onPlayResize = (): void => {
     this.layoutHud();
+    this.applyPlayCamera();
     if (this.useMobileTouch) {
       this.createTouchControls();
     }
@@ -402,38 +419,57 @@ export class PlayScene extends Phaser.Scene {
     const w = this.scale.width;
     const h = this.scale.height;
     const mobile = this.useMobileTouch;
-    const bw = Math.round(250 * s);
-    const bh = Math.round(108 * s);
-    let panelX: number;
-    let panelY: number;
-    if (mobile) {
-      panelX = 12;
-      panelY = 56;
-    } else {
-      panelX = 16;
-      panelY = h - 124;
-    }
-    this.hudBottomPanel.setPosition(panelX, panelY).setSize(bw, bh);
     const fs = Math.round(20 * s);
     const fsSmall = Math.round(16 * s);
     const pad = Math.round(14 * s);
-    this.hudScore
-      .setPosition(panelX + pad, panelY + Math.round(12 * s))
-      .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
-    this.hudLives
-      .setPosition(panelX + pad, panelY + Math.round(46 * s))
-      .setStyle({ fontSize: `${fs}px`, color: "#ff8c8c", fontStyle: "bold" });
-    this.hudTimer
-      .setPosition(panelX + pad, panelY + Math.round(78 * s))
-      .setStyle({ fontSize: `${fsSmall}px`, color: "#ffd980" });
-
     const topCx = w / 2;
     const topBarW = Math.min(Math.round(360 * s), w - 24);
     const topBarH = Math.round(44 * s);
-    this.hudTopPanel.setPosition(topCx, Math.round(10 * s)).setSize(topBarW, topBarH).setOrigin(0.5, 0);
-    this.hudLevel
-      .setPosition(topCx, Math.round(18 * s))
-      .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
+    const topY = Math.round(10 * s);
+
+    if (mobile) {
+      const gap = Math.round(8 * s);
+      const statsTop = topY + topBarH + gap;
+      const bw = Math.min(Math.round(w - 24), Math.round(340 * s));
+      const bh = Math.round(102 * s);
+      const panelX = (w - bw) / 2;
+
+      this.hudTopPanel.setPosition(topCx, topY).setSize(topBarW, topBarH).setOrigin(0.5, 0);
+      this.hudLevel
+        .setPosition(topCx, topY + Math.round(11 * s))
+        .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
+
+      this.hudBottomPanel.setPosition(panelX, statsTop).setSize(bw, bh).setOrigin(0, 0);
+      this.hudScore
+        .setPosition(panelX + pad, statsTop + Math.round(10 * s))
+        .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
+      this.hudLives
+        .setPosition(panelX + pad, statsTop + Math.round(40 * s))
+        .setStyle({ fontSize: `${fs}px`, color: "#ff8c8c", fontStyle: "bold" });
+      this.hudTimer
+        .setPosition(panelX + pad, statsTop + Math.round(70 * s))
+        .setStyle({ fontSize: `${fsSmall}px`, color: "#ffd980" });
+    } else {
+      const bw = Math.round(250 * s);
+      const bh = Math.round(108 * s);
+      const panelX = 16;
+      const panelY = h - 124;
+      this.hudBottomPanel.setPosition(panelX, panelY).setSize(bw, bh);
+      this.hudScore
+        .setPosition(panelX + pad, panelY + Math.round(12 * s))
+        .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
+      this.hudLives
+        .setPosition(panelX + pad, panelY + Math.round(46 * s))
+        .setStyle({ fontSize: `${fs}px`, color: "#ff8c8c", fontStyle: "bold" });
+      this.hudTimer
+        .setPosition(panelX + pad, panelY + Math.round(78 * s))
+        .setStyle({ fontSize: `${fsSmall}px`, color: "#ffd980" });
+
+      this.hudTopPanel.setPosition(topCx, topY).setSize(topBarW, topBarH).setOrigin(0.5, 0);
+      this.hudLevel
+        .setPosition(topCx, topY + Math.round(8 * s))
+        .setStyle({ fontSize: `${fs}px`, color: "#f4f7ff", fontStyle: "bold" });
+    }
   }
 
   private keyDown(key?: Phaser.Input.Keyboard.Key): boolean {
@@ -634,15 +670,16 @@ export class PlayScene extends Phaser.Scene {
 
   private ensureMobileQteChoices(): void {
     if (!this.useMobileTouch || !this.qteContainer || !this.qteActive) return;
-    const s = getMobileUiScale(this);
-    const gap = Math.round(118 * s);
-    const fs = Math.round(34 * s);
-    const padX = Math.round(22 * s);
-    const padY = Math.round(12 * s);
+    const qs = this.qteUiQs;
+    const gap = Math.round(102 * qs);
+    const fs = Math.round(36 * qs);
+    const padX = Math.round(24 * qs);
+    const padY = Math.round(14 * qs);
+    const choiceY = Math.round(38 * qs);
     if (this.mobileQteChoiceTexts.length === 0) {
       for (let i = 0; i < 3; i++) {
         const choice = this.add
-          .text((i - 1) * gap, Math.round(116 * s), "A", {
+          .text((i - 1) * gap, choiceY, "A", {
             fontFamily: "sans-serif",
             fontSize: `${fs}px`,
             color: "#ffffff",
@@ -1085,6 +1122,7 @@ export class PlayScene extends Phaser.Scene {
     if (this.qteActive) return;
     this.stickPointerId = null;
     this.clearStickDirections();
+    this.destroyTouchControls();
     this.qteActive = true;
     playSfx(this, "sfx_qte", 0.5);
     this.clearIdleMousePlay();
@@ -1099,22 +1137,53 @@ export class PlayScene extends Phaser.Scene {
     this.qteIndex = 0;
     this.qteDeadline = this.time.now + this.qteStepMs();
 
+    this.qteHintText = undefined;
+    this.qteTimerLine = undefined;
+
     this.qteContainer = this.add.container(this.scale.width / 2, this.scale.height / 2);
     this.qteContainer.setScrollFactor(0);
-    this.qteContainer.setDepth(1000);
+    this.qteContainer.setDepth(2000);
 
     const qs = Math.min(getMobileUiScale(this), 1.35);
+    this.qteUiQs = qs;
     const bgW = Math.round(420 * qs);
-    const bgH = Math.round(200 * qs);
+    const bgH = this.useMobileTouch ? Math.round(268 * qs) : Math.round(200 * qs);
     const bg = this.add.rectangle(0, 0, bgW, bgH, 0x111122, 0.92);
     bg.setStrokeStyle(3, 0x88ff88);
-    this.qteText = this.add.text(0, 0, "", {
-      fontSize: `${Math.round(36 * qs)}px`,
-      color: "#ffffff",
-      fontFamily: "monospace",
-    });
-    this.qteText.setOrigin(0.5);
-    this.qteContainer.add([bg, this.qteText]);
+
+    if (this.useMobileTouch) {
+      this.qteHintText = this.add
+        .text(0, -bgH / 2 + Math.round(22 * qs), "Tap the matching letter", {
+          fontFamily: "sans-serif",
+          fontSize: `${Math.round(17 * qs)}px`,
+          color: "#b8c0d8",
+        })
+        .setOrigin(0.5);
+      this.qteText = this.add
+        .text(0, -bgH / 2 + Math.round(78 * qs), "", {
+          fontFamily: "Georgia, serif",
+          fontSize: `${Math.round(64 * qs)}px`,
+          color: "#ffffff",
+          fontStyle: "bold",
+        })
+        .setOrigin(0.5);
+      this.qteTimerLine = this.add
+        .text(0, bgH / 2 - Math.round(28 * qs), "", {
+          fontFamily: "monospace",
+          fontSize: `${Math.round(22 * qs)}px`,
+          color: "#ffd980",
+        })
+        .setOrigin(0.5);
+      this.qteContainer.add([bg, this.qteHintText, this.qteText, this.qteTimerLine]);
+    } else {
+      this.qteText = this.add.text(0, 0, "", {
+        fontSize: `${Math.round(36 * qs)}px`,
+        color: "#ffffff",
+        fontFamily: "monospace",
+      });
+      this.qteText.setOrigin(0.5);
+      this.qteContainer.add([bg, this.qteText]);
+    }
 
     this.setDisgusted(true);
     this.spawnHairEffect();
@@ -1127,7 +1196,13 @@ export class PlayScene extends Phaser.Scene {
     if (!this.qteText) return;
     const cur = this.qteLetters[this.qteIndex] ?? "?";
     const rest = this.qteLetters.slice(this.qteIndex + 1).join(" ");
-    this.qteText.setText(`Press: ${cur}\nNext: ${rest}\n\n${Math.max(0, Math.ceil((this.qteDeadline - this.time.now) / 1000))}s`);
+    const sec = Math.max(0, Math.ceil((this.qteDeadline - this.time.now) / 1000));
+    if (this.useMobileTouch) {
+      this.qteText.setText(cur);
+      this.qteTimerLine?.setText(`${sec}s`);
+    } else {
+      this.qteText.setText(`Press: ${cur}\nNext: ${rest}\n\n${sec}s`);
+    }
     this.ensureMobileQteChoices();
   }
 
@@ -1195,6 +1270,10 @@ export class PlayScene extends Phaser.Scene {
         this.lives = 0;
         void this.gameOver("No lives left");
       }
+    }
+
+    if (this.useMobileTouch && (success || this.lives > 0)) {
+      this.createTouchControls();
     }
   }
 
@@ -1693,6 +1772,11 @@ export class PlayScene extends Phaser.Scene {
       } else {
         this.completeQte(false);
       }
+      return;
+    }
+
+    if (this.useMobileTouch) {
+      this.refreshQteDisplay();
       return;
     }
 
