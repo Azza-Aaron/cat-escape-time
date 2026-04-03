@@ -1,0 +1,6 @@
+# Merged with docker-compose.yml for local development:
+# API is reachable on localhost:3001 for the Vite dev server proxy.
+services:
+  api:
+    ports:
+      - "3001:3001"

@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-catgame}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-catgame}
+      POSTGRES_DB: ${POSTGRES_DB:-catgame}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./server/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-catgame} -d ${POSTGRES_DB:-catgame}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-catgame}:${POSTGRES_PASSWORD:-catgame}@db:5432/${POSTGRES_DB:-catgame}
+      PORT: "3001"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3001"
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
