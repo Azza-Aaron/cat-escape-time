@@ -1,7 +1,7 @@
 FROM node:22-alpine AS client-build
 WORKDIR /client
 COPY client/package.json client/package-lock.json* ./
-RUN npm ci 2>/dev/null || npm install
+RUN npm install
 COPY client/ ./
 RUN npm run build
 
