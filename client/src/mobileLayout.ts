@@ -10,6 +10,10 @@ export const MOBILE_LAYOUT_MAX_WIDTH = 900;
  */
 export function useMobileControls(): boolean {
   if (typeof window === "undefined") return false;
+  const w = window.innerWidth;
+  // If it's a very narrow view, we should use the mobile layout, even if touch points are 0 or mouse is fine.
+  if (w < 600) return true;
+
   try {
     // Mouse / trackpad primary: keep keyboard + corner HUD even in a narrow window.
     if (window.matchMedia("(pointer: fine)").matches) return false;
@@ -22,9 +26,6 @@ export function useMobileControls(): boolean {
   } catch {
     /* ignore */
   }
-  const w = window.innerWidth;
-  // If it's a very narrow view, we should use the mobile layout, even if touch points are 0 (e.g. testing in DevTools).
-  if (w < 600) return true;
   return false;
 }
 

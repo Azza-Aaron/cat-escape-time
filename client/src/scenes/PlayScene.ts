@@ -110,6 +110,10 @@ export class PlayScene extends Phaser.Scene {
   private keySpace!: Phaser.Input.Keyboard.Key;
   private useMobileTouch = false;
 
+  private isUiForMobile(): boolean {
+    return this.useMobileTouch || this.scale.width < 560;
+  }
+
   /** After jumping off a ladder, ignore ladder overlap briefly */
   private ladderJumpGrace = 0;
 
@@ -435,7 +439,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private ensureMobileQteChoices(): void {
-    if (!this.useMobileTouch || !this.qteContainer || !this.qteActive) return;
+    if (!this.isUiForMobile() || !this.qteContainer || !this.qteActive) return;
     const qs = this.qteUiQs;
     const gap = Math.round(112 * qs);
     const fs = Math.round(48 * qs);
@@ -543,7 +547,7 @@ export class PlayScene extends Phaser.Scene {
 
     this.goldOnPlatform = Array(PLATFORM_COUNT).fill(false);
 
-    this.worldH = Math.max(1200, 3 * this.level * 200);
+    this.worldH = Math.max(1450, 3 * this.level * 200);
     this.physics.world.setBounds(0, 0, this.worldW, this.worldH);
     this.physics.world.setBoundsCollision(true, true, true, false);
     this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
@@ -927,11 +931,11 @@ export class PlayScene extends Phaser.Scene {
     const qs = Math.min(getMobileUiScale(this), 1.35);
     this.qteUiQs = qs;
     const bgW = Math.round(420 * qs);
-    const bgH = this.useMobileTouch ? Math.round(268 * qs) : Math.round(200 * qs);
+    const bgH = this.isUiForMobile() ? Math.round(268 * qs) : Math.round(200 * qs);
     const bg = this.add.rectangle(0, 0, bgW, bgH, 0x111122, 0.92);
     bg.setStrokeStyle(3, 0x88ff88);
 
-    if (this.useMobileTouch) {
+    if (this.isUiForMobile()) {
       this.qteHintText = this.add
         .text(0, -bgH / 2 + Math.round(28 * qs), "TAP THE MATCHING LETTER TO RECOVER!", {
           fontFamily: "sans-serif",
@@ -1554,7 +1558,7 @@ export class PlayScene extends Phaser.Scene {
       return;
     }
 
-    if (this.useMobileTouch) {
+    if (this.isUiForMobile()) {
       this.refreshQteDisplay();
       return;
     }
@@ -1598,6 +1602,7 @@ export class PlayScene extends Phaser.Scene {
     const wantsLadderMove =
       this.upPressed() || this.downPressed();
     for (const seg of this.ladderZones) {
+      if (!this.goldOnPlatform[seg.fromPlat]) continue;
       if (!Phaser.Geom.Rectangle.Overlaps(pr, seg.rect)) continue;
       // Standing on a platform under a ladder overlaps the same rect; only climb when
       // pressing up/down (or when in the air on the ladder — not while jumping up through).
