@@ -7,21 +7,15 @@ import {
 } from "../audio/gameAudio";
 import { submitHighScore } from "../api/highScores";
 import {
-  getMobileUiScale,
   useMobileControls,
 } from "../mobileLayout";
 import { GAME_WIDTH, PLATFORM_WIDTH } from "./BootScene";
-
-/** ~GAME_WIDTH / zoom ≈ 320 world units visible — portrait “vertical slice”. */
-const MOBILE_CAMERA_ZOOM = 3;
 
 export const PLATFORM_COUNT = 6;
 const TIMER_SECONDS = 300;
 const LIVES_START = 3;
 const TOP_WINDOW_INDICES = [3, 4, 5];
 const IFRAMES_MS = 2200;
-const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
 /** Procedural cat sprites are 44px tall; platform tiles 24px (`BootScene`), origin 0.5. */
 const PLAYER_TEX_HALF_H = 22;
 /** Kie sprites are 56px tall (`kie_idle` / `kie_walk` / `kie_throw`), origin 0.5. */
@@ -101,18 +95,14 @@ export class PlayScene extends Phaser.Scene {
   private daggers!: Phaser.Physics.Arcade.Group;
   private pickups!: Phaser.Physics.Arcade.Group;
 
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private keyA!: Phaser.Input.Keyboard.Key;
-  private keyD!: Phaser.Input.Keyboard.Key;
-  private keyW!: Phaser.Input.Keyboard.Key;
-  private keyS!: Phaser.Input.Keyboard.Key;
-  private keyShift!: Phaser.Input.Keyboard.Key;
-  private keySpace!: Phaser.Input.Keyboard.Key;
+  private cursors?: Phaser.Types.Input.Keyboard.CursorKeys;
+  private keyA?: Phaser.Input.Keyboard.Key;
+  private keyD?: Phaser.Input.Keyboard.Key;
+  private keyW?: Phaser.Input.Keyboard.Key;
+  private keyS?: Phaser.Input.Keyboard.Key;
+  private keyShift?: Phaser.Input.Keyboard.Key;
+  private keySpace?: Phaser.Input.Keyboard.Key;
   private useMobileTouch = false;
-
-  private isUiForMobile(): boolean {
-    return this.useMobileTouch || this.scale.width < 560;
-  }
 
   /** After jumping off a ladder, ignore ladder overlap briefly */
   private ladderJumpGrace = 0;
@@ -139,26 +129,8 @@ export class PlayScene extends Phaser.Scene {
   private meowBubble?: Phaser.GameObjects.Container;
   private kieSpeechBubble?: Phaser.GameObjects.Container;
 
-  private qteActive = false;
-  private qteLetters: string[] = [];
-  private qteIndex = 0;
-  private qteDeadline = 0;
-  private qteContainer?: Phaser.GameObjects.Container;
-  private qteText?: Phaser.GameObjects.Text;
-  /** Mobile QTE: subtitle and countdown (desktop uses single qteText). */
-  private qteHintText?: Phaser.GameObjects.Text;
-  private qteTimerLine?: Phaser.GameObjects.Text;
-  /** Scale factor used when building current QTE panel (for choice positions). */
-  private qteUiQs = 1;
-  private mobileQteChoiceTexts: Phaser.GameObjects.Text[] = [];
-  private mobileQteChoices: string[] = [];
-  private mobileQteChoiceStep = -1;
-  private mobileQteTapped?: string;
-
   private hazardCooldownUntil = 0;
   private gameOverHandled = false;
-
-  private letterKeys: Partial<Record<string, Phaser.Input.Keyboard.Key>> = {};
 
   private idleMs = 0;
   private mousePlayBusy = false;
@@ -289,13 +261,7 @@ export class PlayScene extends Phaser.Scene {
       this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
       this.keyS = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S);
       this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
-      for (let i = 0; i < LETTERS.length; i++) {
-        const ch = LETTERS[i]!;
-        const code = Phaser.Input.Keyboard.KeyCodes[ch as keyof typeof Phaser.Input.Keyboard.KeyCodes];
-        if (typeof code === "number") {
-          this.letterKeys[ch] = this.input.keyboard.addKey(code);
-        }
-      }
+      this.keyShift = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
     }
 
     this.scene.launch("UiScene", {
@@ -310,7 +276,7 @@ export class PlayScene extends Phaser.Scene {
       delay: 1000,
       loop: true,
       callback: () => {
-        if (this.qteActive || this.gameOverHandled) return;
+        if (this.gameOverHandled) return;
         this.timeLeft -= 1;
         this.events.emit("updateTimer", this.timeLeft);
         if (this.timeLeft <= 0) {
@@ -327,15 +293,14 @@ export class PlayScene extends Phaser.Scene {
     // Intro Pan: Show Kie at the top then pan down to the character
     if (this.kie && this.player) {
       this.cameras.main.centerOn(this.kie.x, this.kie.y);
-      this.cameras.main.pan(this.player.x, this.player.y, 2200, "Sine.easeInOut", true, (cam, progress) => {
+      this.cameras.main.pan(this.player.x, this.player.y, 2200, "Sine.easeInOut", true, (_cam, progress) => {
         if (progress === 1) {
-          cam.startFollow(this.player, true, 0.1, 0.1);
+          this.applyPlayCamera();
         }
       });
     } else {
-      // Fallback if sprites are missing for some reason
       this.cameras.main.centerOn(this.player.x, this.player.y);
-      this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+      this.applyPlayCamera();
     }
 
     playLevelMusic(this, this.level);
@@ -343,12 +308,15 @@ export class PlayScene extends Phaser.Scene {
 
   /** Closer follow on mobile only; desktop keeps zoom 1 and original deadzone. */
   private applyPlayCamera(): void {
+    const cam = this.cameras.main;
     if (this.useMobileTouch) {
-      this.cameras.main.setZoom(1.48);
-      this.cameras.main.setDeadzone(70, 56);
+      cam.setZoom(1.48);
+      cam.setDeadzone(70, 56);
+      if (this.player) cam.startFollow(this.player, true, 1, 0.14, 0, 40);
     } else {
-      this.cameras.main.setZoom(1);
-      this.cameras.main.setDeadzone(120, 80);
+      cam.setZoom(1);
+      cam.setDeadzone(120, 80);
+      if (this.player) cam.startFollow(this.player, true, 0.12, 0.12, 0, 0);
     }
   }
 
@@ -428,67 +396,6 @@ export class PlayScene extends Phaser.Scene {
         seg.gfx.setVisible(this.goldOnPlatform[seg.fromPlat]);
       }
     }
-  }
-
-  private clearMobileQteChoices(): void {
-    this.mobileQteChoiceTexts.forEach((t) => t.destroy());
-    this.mobileQteChoiceTexts = [];
-    this.mobileQteChoices = [];
-    this.mobileQteChoiceStep = -1;
-    this.mobileQteTapped = undefined;
-  }
-
-  private ensureMobileQteChoices(): void {
-    if (!this.isUiForMobile() || !this.qteContainer || !this.qteActive) return;
-    const qs = this.qteUiQs;
-    const gap = Math.round(112 * qs);
-    const fs = Math.round(48 * qs);
-    const padX = Math.round(34 * qs);
-    const padY = Math.round(24 * qs);
-    const choiceY = Math.round(50 * qs);
-    if (this.mobileQteChoiceTexts.length === 0) {
-      for (let i = 0; i < 3; i++) {
-        const choice = this.add
-          .text((i - 1) * gap, choiceY, "A", {
-            fontFamily: "sans-serif",
-            fontSize: `${fs}px`,
-            color: "#ffffff",
-            backgroundColor: "#2a4d6a",
-            padding: { x: padX, y: padY },
-          })
-          .setOrigin(0.5)
-          .setInteractive({ useHandCursor: true });
-
-        // Add visual flair to buttons
-        choice.setStroke("#ffffff", 6);
-        choice.setShadow(2, 2, "#000000", 2, true, true);
-
-        choice.on("pointerdown", () => {
-          this.mobileQteTapped = this.mobileQteChoices[i];
-          // Tactile feedback: flash color and scale slightly
-          choice.setBackgroundColor("#48b080");
-          choice.setScale(0.92);
-          this.time.delayedCall(120, () => {
-             choice.setBackgroundColor("#2a4d6a");
-             choice.setScale(1.0);
-          });
-        });
-        this.mobileQteChoiceTexts.push(choice);
-      }
-      this.qteContainer.add(this.mobileQteChoiceTexts);
-    }
-    if (this.mobileQteChoiceStep === this.qteIndex) return;
-    const expected = this.qteLetters[this.qteIndex] ?? "A";
-    const pool = LETTERS.split("").filter((ch) => ch !== expected);
-    const decoyA = Phaser.Utils.Array.GetRandom(pool) ?? "B";
-    const decoyB = Phaser.Utils.Array.GetRandom(
-      pool.filter((ch) => ch !== decoyA)
-    ) ?? "C";
-    this.mobileQteChoices = Phaser.Utils.Array.Shuffle([expected, decoyA, decoyB]);
-    for (let i = 0; i < this.mobileQteChoiceTexts.length; i++) {
-      this.mobileQteChoiceTexts[i]!.setText(this.mobileQteChoices[i] ?? "?");
-    }
-    this.mobileQteChoiceStep = this.qteIndex;
   }
 
   /** One-way: pass through only when moving up from below the deck (not every upward velocity). */
@@ -715,19 +622,11 @@ export class PlayScene extends Phaser.Scene {
     this.lives += 1;
     this.level += 1;
     this.buildLevel();
-    // Snap camera to new character start position
     this.cameras.main.centerOn(this.player.x, this.player.y);
+    this.applyPlayCamera();
     this.updateHudEvents();
     playSfx(this, "sfx_level", 0.45);
     playLevelMusic(this, this.level);
-  }
-
-  /** QTE per-letter time window by level: 4s, 3s, 2s, 1s. */
-  private qteStepMs(): number {
-    if (this.level <= 3) return 4000;
-    if (this.level <= 6) return 3000;
-    if (this.level <= 9) return 2000;
-    return 1000;
   }
 
   private pickupFallTuning(): { velocityMul: number; gravityOffset: number } {
@@ -745,7 +644,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private tryEnterWindow(): void {
-    if (this.qteActive || this.gameOverHandled || this.levelTransitioning) return;
+    if (this.gameOverHandled || this.levelTransitioning) return;
     this.levelTransitioning = true;
 
     const wb = this.windowSprite.body as Phaser.Physics.Arcade.StaticBody | undefined;
@@ -828,7 +727,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private canTakeDamage(_p: Phaser.Physics.Arcade.Sprite): boolean {
-    if (this.qteActive || this.gameOverHandled) return false;
+    if (this.gameOverHandled) return false;
     if (this.time.now < this.hazardCooldownUntil) return false;
     if (this.time.now < this.fallInvulnUntil) return false;
     return this.time.now >= this.invincibleUntil;
@@ -838,7 +737,7 @@ export class PlayScene extends Phaser.Scene {
     player: Phaser.Physics.Arcade.Sprite,
     dog: Phaser.Physics.Arcade.Sprite
   ): void {
-    if (this.qteActive || this.gameOverHandled) return;
+    if (this.gameOverHandled) return;
     const pb = player.body as Phaser.Physics.Arcade.Body | null;
     const db = dog.body as Phaser.Physics.Arcade.Body | null;
     if (!pb || !db) return;
@@ -876,7 +775,7 @@ export class PlayScene extends Phaser.Scene {
     player: Phaser.Physics.Arcade.Sprite,
     dog: Phaser.Physics.Arcade.Sprite
   ): void {
-    if (this.qteActive || this.gameOverHandled) return;
+    if (this.gameOverHandled) return;
     const pb = player.body as Phaser.Physics.Arcade.Body | null;
     const db = dog.body as Phaser.Physics.Arcade.Body | null;
     if (!pb || !db) return;
@@ -900,95 +799,26 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private triggerHazard(_kind: string): void {
-    if (this.qteActive || this.gameOverHandled) return;
+    if (this.gameOverHandled) return;
     if (!this.canTakeDamage(this.player)) return;
-    this.startQte();
-  }
 
-  private startQte(): void {
-    if (this.qteActive) return;
-    this.qteActive = true;
-    playSfx(this, "sfx_qte", 0.5);
-    this.clearIdleMousePlay();
-    this.clearMeowBubble();
-    this.player.anims.stop();
-    this.physics.world.pause();
-    this.timerEvent.paused = true;
-
-    this.qteLetters = [0, 1, 2].map(() =>
-      LETTERS.charAt(Phaser.Math.Between(0, LETTERS.length - 1))
-    );
-    this.qteIndex = 0;
-    this.qteDeadline = this.time.now + this.qteStepMs();
-
-    this.qteHintText = undefined;
-    this.qteTimerLine = undefined;
-
-    this.qteContainer = this.add.container(this.scale.width / 2, this.scale.height / 2);
-    this.qteContainer.setScrollFactor(0);
-    this.qteContainer.setDepth(2000);
-
-    const qs = Math.min(getMobileUiScale(this), 1.35);
-    this.qteUiQs = qs;
-    const bgW = Math.round(420 * qs);
-    const bgH = this.isUiForMobile() ? Math.round(268 * qs) : Math.round(200 * qs);
-    const bg = this.add.rectangle(0, 0, bgW, bgH, 0x111122, 0.92);
-    bg.setStrokeStyle(3, 0x88ff88);
-
-    if (this.isUiForMobile()) {
-      this.qteHintText = this.add
-        .text(0, -bgH / 2 + Math.round(28 * qs), "TAP THE MATCHING LETTER TO RECOVER!", {
-          fontFamily: "sans-serif",
-          fontSize: `${Math.round(20 * qs)}px`,
-          color: "#88ffcc",
-          fontStyle: "bold",
-        })
-        .setOrigin(0.5);
-      this.qteText = this.add
-        .text(0, -bgH / 2 + Math.round(92 * qs), "", {
-          fontFamily: "Georgia, serif",
-          fontSize: `${Math.round(72 * qs)}px`,
-          color: "#ffffff",
-          fontStyle: "bold",
-        })
-        .setOrigin(0.5);
-      this.qteTimerLine = this.add
-        .text(0, bgH / 2 - Math.round(30 * qs), "", {
-          fontFamily: "monospace",
-          fontSize: `${Math.round(24 * qs)}px`,
-          color: "#ffd980",
-        })
-        .setOrigin(0.5);
-      this.qteContainer.add([bg, this.qteHintText, this.qteText, this.qteTimerLine]);
-    } else {
-      this.qteText = this.add.text(0, 0, "", {
-        fontSize: `${Math.round(36 * qs)}px`,
-        color: "#ffffff",
-        fontFamily: "monospace",
-      });
-      this.qteText.setOrigin(0.5);
-      this.qteContainer.add([bg, this.qteText]);
-    }
-
+    playSfx(this, "sfx_hurt", 0.5);
     this.setDisgusted(true);
     this.spawnHairEffect();
 
-    this.refreshQteDisplay();
-    this.ensureMobileQteChoices();
-  }
+    this.lives -= 1;
+    this.events.emit("updateLives", this.lives);
 
-  private refreshQteDisplay(): void {
-    if (!this.qteText) return;
-    const cur = this.qteLetters[this.qteIndex] ?? "?";
-    const rest = this.qteLetters.slice(this.qteIndex + 1).join(" ");
-    const sec = Math.max(0, Math.ceil((this.qteDeadline - this.time.now) / 1000));
-    if (this.useMobileTouch) {
-      this.qteText.setText(cur);
-      this.qteTimerLine?.setText(`${sec}s`);
-    } else {
-      this.qteText.setText(`Press: ${cur}\nNext: ${rest}\n\n${sec}s`);
+    if (this.lives <= 0) {
+      this.lives = 0;
+      void this.gameOver("No lives left");
+      return;
     }
-    this.ensureMobileQteChoices();
+
+    this.invincibleUntil = this.time.now + IFRAMES_MS;
+    this.hazardCooldownUntil = this.time.now + 700;
+    this.player.setAlpha(0.65);
+    this.time.delayedCall(IFRAMES_MS, () => this.player.setAlpha(1));
   }
 
   private spawnHairEffect(): void {
@@ -1026,35 +856,6 @@ export class PlayScene extends Phaser.Scene {
     } else {
       this.player.setTexture("cat_idle");
       this.disgustedUntil = 0;
-    }
-  }
-
-  private completeQte(success: boolean): void {
-    this.clearMobileQteChoices();
-    this.qteContainer?.destroy(true);
-    this.qteContainer = undefined;
-    this.qteText = undefined;
-    this.qteActive = false;
-
-    this.physics.world.resume();
-    this.timerEvent.paused = false;
-
-    this.setDisgusted(false);
-    this.hazardCooldownUntil = this.time.now + 700;
-
-    if (success) {
-      this.invincibleUntil = this.time.now + IFRAMES_MS;
-      this.player.setAlpha(0.65);
-      this.time.delayedCall(IFRAMES_MS, () => this.player.setAlpha(1));
-      playSfx(this, "sfx_pickup", 0.28);
-    } else {
-      playSfx(this, "sfx_fail", 0.45);
-      this.lives -= 1;
-      this.events.emit("updateLives", this.lives);
-      if (this.lives <= 0) {
-        this.lives = 0;
-        void this.gameOver("No lives left");
-      }
     }
   }
 
@@ -1247,7 +1048,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private maybeAnnounceNewPlatform(grounded: boolean): void {
-    if (!grounded || this.qteActive || this.mousePlayBusy) return;
+    if (!grounded || this.mousePlayBusy) return;
     if (
       this.meowLastPlatformIdx !== null &&
       this.lastSafePlatIdx !== this.meowLastPlatformIdx
@@ -1296,6 +1097,7 @@ export class PlayScene extends Phaser.Scene {
       this.player.setPosition(plat.x, this.yStandOnPlatform(plat));
     }
     this.fallInvulnUntil = this.time.now + 2000;
+    this.hazardCooldownUntil = this.time.now + 2000;
     this.player.setAlpha(0.45);
     this.time.delayedCall(2000, () => this.player.setAlpha(1));
     this.meowLastPlatformIdx = this.lastSafePlatIdx;
@@ -1303,7 +1105,7 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private checkFallDeath(): void {
-    if (this.qteActive || this.gameOverHandled) return;
+    if (this.gameOverHandled) return;
     if (this.time.now < this.fallInvulnUntil) return;
     if (this.player.y < this.worldH + 40) return;
     this.respawnFromFall();
@@ -1316,7 +1118,6 @@ export class PlayScene extends Phaser.Scene {
   ): void {
     if (this.mousePlayBusy) return;
     if (
-      this.qteActive ||
       !grounded ||
       climbing ||
       this.onLadder
@@ -1438,7 +1239,6 @@ export class PlayScene extends Phaser.Scene {
     climbing: boolean;
     sprint: boolean;
   }): void {
-    if (this.qteActive) return;
     if (this.mousePlayBusy) return;
     if (this.pickupJoyActive) {
       this.player.anims.stop();
@@ -1480,14 +1280,6 @@ export class PlayScene extends Phaser.Scene {
     if (this.gameOverHandled) return;
     if (this.levelTransitioning) return;
 
-    if (this.qteActive) {
-      this.handleQteInput(time);
-      if (this.hairEmitter) {
-        this.hairEmitter.setPosition(this.player.x, this.player.y - 20);
-      }
-      return;
-    }
-
     this.updateLastSafePlatform();
     this.catchNearbyPickups();
     this.checkFallDeath();
@@ -1528,59 +1320,6 @@ export class PlayScene extends Phaser.Scene {
     this.updateDogAi();
     this.updateNinjaAi(time);
     this.cleanupProjectiles();
-  }
-
-  private handleQteInput(time: number): void {
-    if (!this.qteText) return;
-    if (time > this.qteDeadline) {
-      this.completeQte(false);
-      return;
-    }
-    const expected = this.qteLetters[this.qteIndex];
-    if (!expected) {
-      this.completeQte(true);
-      return;
-    }
-    const tapped = this.mobileQteTapped;
-    this.mobileQteTapped = undefined;
-    if (tapped) {
-      if (tapped === expected) {
-        this.qteIndex += 1;
-        if (this.qteIndex >= this.qteLetters.length) {
-          this.completeQte(true);
-        } else {
-          this.qteDeadline = time + this.qteStepMs();
-          this.mobileQteChoiceStep = -1;
-        }
-      } else {
-        this.completeQte(false);
-      }
-      return;
-    }
-
-    if (this.isUiForMobile()) {
-      this.refreshQteDisplay();
-      return;
-    }
-
-    for (let i = 0; i < LETTERS.length; i++) {
-      const ch = LETTERS[i]!;
-      const key = this.letterKeys[ch];
-      if (!key) continue;
-      if (!Phaser.Input.Keyboard.JustDown(key)) continue;
-      if (ch === expected) {
-        this.qteIndex += 1;
-        if (this.qteIndex >= this.qteLetters.length) {
-          this.completeQte(true);
-        } else {
-          this.qteDeadline = time + this.qteStepMs();
-        }
-      } else {
-        this.completeQte(false);
-      }
-      return;
-    }
-    this.refreshQteDisplay();
   }
 
   private updateLadderState(): void {
@@ -1651,13 +1390,18 @@ export class PlayScene extends Phaser.Scene {
 
   private showLadderHint(msg: string): void {
     if (!this.ladderHint) {
-      this.ladderHint = this.add.text(this.scale.width / 2, 120, msg, {
+      const cam = this.cameras.main;
+      const z = cam.zoom;
+      const cx = cam.centerX + (this.scale.width / 2 - cam.centerX) / z;
+      const cy = cam.centerY + (120 - cam.centerY) / z;
+      this.ladderHint = this.add.text(cx, cy, msg, {
         fontSize: "16px",
         color: "#ffaaaa",
       });
       this.ladderHint.setScrollFactor(0);
       this.ladderHint.setOrigin(0.5);
       this.ladderHint.setDepth(500);
+      this.ladderHint.setScale(1 / z);
     } else {
       this.ladderHint.setText(msg);
     }
@@ -1967,7 +1711,7 @@ export class PlayScene extends Phaser.Scene {
     }
     for (const d of this.daggers.getChildren()) {
       const s = d as Phaser.Physics.Arcade.Sprite;
-      if (s.x < -80 || s.x > this.worldW + 80) s.destroy();
+      if (s.x < -80 || s.x > this.worldW + 80 || s.y < -80 || s.y > this.worldH + 80) s.destroy();
     }
   }
 }
