@@ -621,6 +621,7 @@ export class PlayScene extends Phaser.Scene {
     this.score += 500 + Math.floor(this.timeLeft) * 2;
     this.lives += 1;
     this.level += 1;
+    this.timeLeft = TIMER_SECONDS;
     this.buildLevel();
     this.cameras.main.centerOn(this.player.x, this.player.y);
     this.applyPlayCamera();
