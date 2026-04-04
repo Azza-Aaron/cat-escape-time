@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { preloadGameAudio } from "../audio/gameAudio";
 import { startCatMouseDemo } from "../game/catMouseDemo";
-import { getMobileUiScale } from "../mobileLayout";
+import { applyViewportScaleMode, getMobileUiScale } from "../mobileLayout";
 
 /** Match game width in main.ts; platforms use 90% of this. */
 export const GAME_WIDTH = 960;
@@ -271,6 +271,15 @@ export class BootScene extends Phaser.Scene {
   }
 
   create(): void {
+    applyViewportScaleMode(this);
+    const onResize = (): void => {
+      applyViewportScaleMode(this);
+    };
+    this.scale.on("resize", onResize);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off("resize", onResize);
+    });
+
     const W = PLATFORM_WIDTH;
     makeTexture(this, "platform", W, 24, (g) => {
       g.fillStyle(0x5c4033);

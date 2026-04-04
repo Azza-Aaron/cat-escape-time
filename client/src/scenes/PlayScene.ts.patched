@@ -12,9 +12,7 @@ import {
 } from "../mobileLayout";
 import { GAME_WIDTH, PLATFORM_WIDTH } from "./BootScene";
 
-/** ~GAME_WIDTH / zoom ≈ 320 world units visible — portrait “vertical slice”. */
 const MOBILE_CAMERA_ZOOM = 3;
-
 export const PLATFORM_COUNT = 6;
 const TIMER_SECONDS = 300;
 const LIVES_START = 3;
@@ -109,6 +107,20 @@ export class PlayScene extends Phaser.Scene {
   private keyShift!: Phaser.Input.Keyboard.Key;
   private keySpace!: Phaser.Input.Keyboard.Key;
   private useMobileTouch = false;
+  /** Drag-pad pointer id; null when not dragging. */
+  private stickPointerId: number | null = null;
+  private stickCenterX = 0;
+  private stickCenterY = 0;
+  private readonly stickDead = 34;
+  private touchLeftDown = false;
+  private touchRightDown = false;
+  private touchUpDown = false;
+  private touchDownDown = false;
+  private touchSprintDown = false;
+  private touchJumpDown = false;
+  private touchUpPrevJump = false;
+  private stickUpJumpEdge = false;
+  private jumpPressConsumed = false;
 
   /** After jumping off a ladder, ignore ladder overlap briefly */
   private ladderJumpGrace = 0;
@@ -151,6 +163,13 @@ export class PlayScene extends Phaser.Scene {
   private mobileQteChoiceStep = -1;
   private mobileQteTapped?: string;
 
+  private hudTimer!: Phaser.GameObjects.Text;
+  private hudLevel!: Phaser.GameObjects.Text;
+  private hudLives!: Phaser.GameObjects.Text;
+  private hudScore!: Phaser.GameObjects.Text;
+  private hudBottomPanel!: Phaser.GameObjects.Rectangle;
+  private hudTopPanel!: Phaser.GameObjects.Rectangle;
+
   private hazardCooldownUntil = 0;
   private gameOverHandled = false;
 
@@ -192,6 +211,8 @@ export class PlayScene extends Phaser.Scene {
     stopMenuMusic();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       stopLevelMusic();
+      this.scale.off("resize", this.onPlayResize, this);
+      this.destroyTouchControls();
     });
 
     this.physics.world.setBounds(0, 0, this.worldW, this.worldH);
@@ -284,23 +305,26 @@ export class PlayScene extends Phaser.Scene {
       this.keyD = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
       this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
       this.keyS = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S);
-      this.keySpace = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
+      this.keyShift = this.input.keyboard.addKey(
+        Phaser.Input.Keyboard.KeyCodes.SHIFT
+      );
+      this.keySpace = this.input.keyboard.addKey(
+        Phaser.Input.Keyboard.KeyCodes.SPACE
+      );
       for (let i = 0; i < LETTERS.length; i++) {
         const ch = LETTERS[i]!;
-        const code = Phaser.Input.Keyboard.KeyCodes[ch as keyof typeof Phaser.Input.Keyboard.KeyCodes];
+        const code =
+          Phaser.Input.Keyboard.KeyCodes[
+            ch as keyof typeof Phaser.Input.Keyboard.KeyCodes
+          ];
         if (typeof code === "number") {
           this.letterKeys[ch] = this.input.keyboard.addKey(code);
         }
       }
     }
-
-    this.scene.launch("UiScene", {
-      level: this.level,
-      score: this.score,
-      lives: this.lives,
-      timeLeft: this.timeLeft,
-      useMobileTouch: this.useMobileTouch
-    });
+    if (this.useMobileTouch) {
+      this.createTouchControls();
+    }
 
     this.timerEvent = this.time.addEvent({
       delay: 1000,
@@ -308,31 +332,67 @@ export class PlayScene extends Phaser.Scene {
       callback: () => {
         if (this.qteActive || this.gameOverHandled) return;
         this.timeLeft -= 1;
-        this.events.emit("updateTimer", this.timeLeft);
+        this.updateHud();
         if (this.timeLeft <= 0) {
           this.timeLeft = 0;
-          this.events.emit("updateTimer", 0);
+          this.updateHud();
           void this.gameOver("Time up!");
         }
       },
     });
 
-    this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
-    this.applyPlayCamera();
+    this.hudBottomPanel = this.add
+      .rectangle(0, 0, 250, 108, 0x111827, 0.78)
+      .setOrigin(0, 0)
+      .setStrokeStyle(2, 0x6d7f99, 0.9)
+      .setScrollFactor(0)
+      .setDepth(880);
+    this.hudScore = this.add
+      .text(0, 0, "", {
+        fontSize: "20px",
+        color: "#f4f7ff",
+        fontStyle: "bold",
+      })
+      .setScrollFactor(0)
+      .setDepth(881);
+    this.hudLives = this.add
+      .text(0, 0, "", {
+        fontSize: "20px",
+        color: "#ff8c8c",
+        fontStyle: "bold",
+      })
+      .setScrollFactor(0)
+      .setDepth(881);
+    this.hudTimer = this.add
+      .text(0, 0, "", {
+        fontSize: "16px",
+        color: "#ffd980",
+      })
+      .setScrollFactor(0)
+      .setDepth(881);
 
-    // Intro Pan: Show Kie at the top then pan down to the character
-    if (this.kie && this.player) {
-      this.cameras.main.centerOn(this.kie.x, this.kie.y);
-      this.cameras.main.pan(this.player.x, this.player.y, 2200, "Sine.easeInOut", true, (cam, progress) => {
-        if (progress === 1) {
-          cam.startFollow(this.player, true, 0.1, 0.1);
-        }
-      });
-    } else {
-      // Fallback if sprites are missing for some reason
-      this.cameras.main.centerOn(this.player.x, this.player.y);
-      this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
-    }
+    const topCx = this.scale.width / 2;
+    this.hudTopPanel = this.add
+      .rectangle(topCx, 10, 360, 44, 0x111827, 0.78)
+      .setOrigin(0.5, 0)
+      .setStrokeStyle(2, 0x6d7f99, 0.9)
+      .setScrollFactor(0)
+      .setDepth(880);
+    this.hudLevel = this.add
+      .text(topCx, 18, "", {
+        fontSize: "20px",
+        color: "#f4f7ff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0)
+      .setDepth(881);
+
+    this.layoutHud();
+    this.updateHud();
+    this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
+    this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
+    this.applyPlayCamera();
 
     playLevelMusic(this, this.level);
   }
@@ -348,43 +408,10 @@ export class PlayScene extends Phaser.Scene {
     }
   }
 
-  private onPlayResize = (): void => {
-    this.applyPlayCamera();
-  };
-
-
-
-  private keyDown(key?: Phaser.Input.Keyboard.Key): boolean {
-    return !!key?.isDown;
-  }
-
-  private justPressed(key?: Phaser.Input.Keyboard.Key): boolean {
-    return !!key && Phaser.Input.Keyboard.JustDown(key);
-  }
-
-  private isPointerDown(): boolean {
-    return this.useMobileTouch && this.input.activePointer.isDown;
-  }
-
-  private leftPressed(): boolean {
-    return (
-      (this.isPointerDown() && this.input.activePointer.worldX < this.player.x - 20) ||
-      this.keyDown(this.keyA) ||
-      this.keyDown(this.cursors?.left)
-    );
-  }
-
-  private rightPressed(): boolean {
-    return (
-      (this.isPointerDown() && this.input.activePointer.worldX > this.player.x + 20) ||
-      this.keyDown(this.keyD) ||
-      this.keyDown(this.cursors?.right)
-    );
-  }
-
   private upPressed(): boolean {
     return (
-      (this.isPointerDown() && this.input.activePointer.worldY < this.player.y - 40) ||
+      this.touchJumpDown ||
+      this.touchUpDown ||
       this.keyDown(this.keyW) ||
       this.keyDown(this.cursors?.up)
     );
@@ -392,38 +419,28 @@ export class PlayScene extends Phaser.Scene {
 
   private downPressed(): boolean {
     return (
-      (this.isPointerDown() && this.input.activePointer.worldY > this.player.y + 40) ||
+      this.touchDownDown ||
       this.keyDown(this.keyS) ||
       this.keyDown(this.cursors?.down)
     );
   }
-
-
-
-  private touchUpPrevJump = false;
 
   private consumeJumpPress(): boolean {
     const keyboardJump =
       this.justPressed(this.keySpace) ||
       this.justPressed(this.keyW) ||
       this.justPressed(this.cursors?.up);
-    
-    let touchJump = false;
-    if (this.isPointerDown() && this.input.activePointer.worldY < this.player.y - 40) {
-      touchJump = true;
-    }
-    const touchJumpEdge = touchJump && !this.touchUpPrevJump;
-    this.touchUpPrevJump = touchJump;
-
-    return keyboardJump || touchJumpEdge;
+    const touchJump = this.touchJumpQueued;
+    this.touchJumpQueued = false;
+    return keyboardJump || touchJump;
   }
 
-  private refreshLadderVisibility(): void {
-    for (const seg of this.ladderZones) {
-      if (seg.gfx) {
-        seg.gfx.setVisible(this.goldOnPlatform[seg.fromPlat]);
-      }
-    }
+  private clearStickDirections(): void {
+    this.touchLeftDown = false;
+    this.touchRightDown = false;
+    this.touchUpDown = false;
+    this.touchDownDown = false;
+    this.touchUpPrevJump = false;
   }
 
   private clearMobileQteChoices(): void {
@@ -437,11 +454,11 @@ export class PlayScene extends Phaser.Scene {
   private ensureMobileQteChoices(): void {
     if (!this.useMobileTouch || !this.qteContainer || !this.qteActive) return;
     const qs = this.qteUiQs;
-    const gap = Math.round(112 * qs);
-    const fs = Math.round(48 * qs);
-    const padX = Math.round(34 * qs);
-    const padY = Math.round(24 * qs);
-    const choiceY = Math.round(50 * qs);
+    const gap = Math.round(102 * qs);
+    const fs = Math.round(36 * qs);
+    const padX = Math.round(24 * qs);
+    const padY = Math.round(14 * qs);
+    const choiceY = Math.round(38 * qs);
     if (this.mobileQteChoiceTexts.length === 0) {
       for (let i = 0; i < 3; i++) {
         const choice = this.add
@@ -449,25 +466,13 @@ export class PlayScene extends Phaser.Scene {
             fontFamily: "sans-serif",
             fontSize: `${fs}px`,
             color: "#ffffff",
-            backgroundColor: "#2a4d6a",
+            backgroundColor: "#28445a",
             padding: { x: padX, y: padY },
           })
           .setOrigin(0.5)
           .setInteractive({ useHandCursor: true });
-
-        // Add visual flair to buttons
-        choice.setStroke("#ffffff", 6);
-        choice.setShadow(2, 2, "#000000", 2, true, true);
-
         choice.on("pointerdown", () => {
           this.mobileQteTapped = this.mobileQteChoices[i];
-          // Tactile feedback: flash color and scale slightly
-          choice.setBackgroundColor("#48b080");
-          choice.setScale(0.92);
-          this.time.delayedCall(120, () => {
-             choice.setBackgroundColor("#2a4d6a");
-             choice.setScale(1.0);
-          });
         });
         this.mobileQteChoiceTexts.push(choice);
       }
@@ -645,7 +650,6 @@ export class PlayScene extends Phaser.Scene {
     this.clearKieSpeechBubble();
     this.clearIdleMousePlay();
     this.ladderJumpGrace = 0;
-    this.refreshLadderVisibility();
   }
 
   private threatBand(): "low" | "mid" | "high" {
@@ -708,12 +712,14 @@ export class PlayScene extends Phaser.Scene {
 
   private advanceLevel(): void {
     this.score += 500 + Math.floor(this.timeLeft) * 2;
-    this.lives += 1;
+    this.events.emit("updateLevel", this.level + 1);
+    this.events.emit("updateScore", this.score);
+    this.events.emit("updateLives", this.lives + 1);
+    this.events.emit("updatePlatform", 1);
+    this.lives += 1; this.events.emit("updateLives", this.lives);
     this.level += 1;
     this.buildLevel();
-    // Snap camera to new character start position
-    this.cameras.main.centerOn(this.player.x, this.player.y);
-    this.updateHudEvents();
+    this.updateHud();
     playSfx(this, "sfx_level", 0.45);
     playLevelMusic(this, this.level);
   }
@@ -773,15 +779,14 @@ export class PlayScene extends Phaser.Scene {
     });
   }
 
-  private updateHudEvents(): void {
+  private updateHud(): void {
     const curPlat = this.player
       ? this.platformIndexForY(this.player.y) + 1
       : this.lastSafePlatIdx + 1;
-    this.events.emit("updatePlatform", curPlat);
-    this.events.emit("updateLevel", this.level);
-    this.events.emit("updateScore", this.score);
-    this.events.emit("updateLives", this.lives);
-    this.events.emit("updateTimer", this.timeLeft);
+    this.hudLevel.setText(`Level ${this.level}   Platform ${curPlat}/${PLATFORM_COUNT}`);
+    this.hudScore.setText(`Score: ${this.score}`);
+    this.hudLives.setText(`Health: ${this.lives}`);
+    this.hudTimer.setText(`Time: ${this.timeLeft}s`);
   }
 
   private collectPickup(sprite: Phaser.Physics.Arcade.Sprite): void {
@@ -791,18 +796,17 @@ export class PlayScene extends Phaser.Scene {
     const plat = this.platformIndexForY(this.player.y);
     if (kind === "gold") {
       this.goldOnPlatform[plat] = true;
-      this.refreshLadderVisibility();
       this.goldTotal += 1;
-      this.score += 50;
+      this.score += 50; this.events.emit("updateScore", this.score);
     } else if (kind === "heart") {
-      this.lives += 1;
-      this.score += 25;
+      this.lives += 1; this.events.emit("updateLives", this.lives);
+      this.score += 25; this.events.emit("updateScore", this.score);
     }
     playSfx(this, "sfx_pickup", 0.42);
     playSfx(this, "sfx_purr", 0.42);
     this.playPickupJoyReaction();
     sprite.destroy();
-    this.updateHudEvents();
+    this.updateHud();
   }
 
   private catchNearbyPickups(): void {
@@ -842,10 +846,10 @@ export class PlayScene extends Phaser.Scene {
       pb.velocity.y > 40 && pb.bottom <= db.top + 12;
     if (stomp) {
       dog.destroy();
-      this.score += 30;
+      this.score += 30; this.events.emit("updateScore", this.score);
       player.setVelocityY(-280);
       playSfx(this, "sfx_stomp", 0.4);
-      this.updateHudEvents();
+      this.updateHud();
       return;
     }
     if (this.canTakeDamage(player)) {
@@ -884,10 +888,10 @@ export class PlayScene extends Phaser.Scene {
         Phaser.Utils.Array.GetRandom(NINJA_ESCAPE_QUOTES) ?? "I'll be back!"
       );
       dog.destroy();
-      this.score += 45;
+      this.score += 45; this.events.emit("updateScore", this.score);
       player.setVelocityY(-300);
       playSfx(this, "sfx_stomp", 0.42);
-      this.updateHudEvents();
+      this.updateHud();
       return;
     }
     if (this.canTakeDamage(player)) {
@@ -903,6 +907,9 @@ export class PlayScene extends Phaser.Scene {
 
   private startQte(): void {
     if (this.qteActive) return;
+    this.stickPointerId = null;
+    this.clearStickDirections();
+    this.destroyTouchControls();
     this.qteActive = true;
     playSfx(this, "sfx_qte", 0.5);
     this.clearIdleMousePlay();
@@ -933,25 +940,24 @@ export class PlayScene extends Phaser.Scene {
 
     if (this.useMobileTouch) {
       this.qteHintText = this.add
-        .text(0, -bgH / 2 + Math.round(28 * qs), "TAP THE MATCHING LETTER TO RECOVER!", {
+        .text(0, -bgH / 2 + Math.round(22 * qs), "Tap the matching letter", {
           fontFamily: "sans-serif",
-          fontSize: `${Math.round(20 * qs)}px`,
-          color: "#88ffcc",
-          fontStyle: "bold",
+          fontSize: `${Math.round(17 * qs)}px`,
+          color: "#b8c0d8",
         })
         .setOrigin(0.5);
       this.qteText = this.add
-        .text(0, -bgH / 2 + Math.round(92 * qs), "", {
+        .text(0, -bgH / 2 + Math.round(78 * qs), "", {
           fontFamily: "Georgia, serif",
-          fontSize: `${Math.round(72 * qs)}px`,
+          fontSize: `${Math.round(64 * qs)}px`,
           color: "#ffffff",
           fontStyle: "bold",
         })
         .setOrigin(0.5);
       this.qteTimerLine = this.add
-        .text(0, bgH / 2 - Math.round(30 * qs), "", {
+        .text(0, bgH / 2 - Math.round(28 * qs), "", {
           fontFamily: "monospace",
-          fontSize: `${Math.round(24 * qs)}px`,
+          fontSize: `${Math.round(22 * qs)}px`,
           color: "#ffd980",
         })
         .setOrigin(0.5);
@@ -1045,22 +1051,22 @@ export class PlayScene extends Phaser.Scene {
       playSfx(this, "sfx_pickup", 0.28);
     } else {
       playSfx(this, "sfx_fail", 0.45);
-      this.lives -= 1;
-      this.events.emit("updateLives", this.lives);
+      this.lives -= 1; this.events.emit("updateLives", this.lives);
+      this.updateHud();
       if (this.lives <= 0) {
         this.lives = 0;
         void this.gameOver("No lives left");
       }
+    }
+
+    if (this.useMobileTouch && (success || this.lives > 0)) {
+      this.createTouchControls();
     }
   }
 
   private async gameOver(reason: string): Promise<void> {
     if (this.gameOverHandled) return;
     this.gameOverHandled = true;
-    
-    // Stop hud scene first so menus don't overlap
-    this.scene.stop("UiScene");
-
     if (reason !== "No lives left") {
       playSfx(this, "sfx_hurt", 0.5);
     }
@@ -1242,6 +1248,36 @@ export class PlayScene extends Phaser.Scene {
     });
   }
 
+  private processPickupOnPlatform(
+    pickup: Phaser.Physics.Arcade.Sprite,
+    pl: Phaser.Physics.Arcade.Sprite
+  ): boolean {
+    const body = pickup.body as Phaser.Physics.Arcade.Body;
+    const pb = pl.body as Phaser.Physics.Arcade.StaticBody;
+    if (!body || !pb) return false;
+    const overlapX = Math.min(body.right, pb.right) - Math.max(body.left, pb.left);
+    if (overlapX <= 2) return false;
+    if (body.velocity.y < -12) return false;
+    const prevBottom = body.prev.y + body.height;
+    const comingFromAbove = prevBottom <= pb.top + 12;
+    if (!comingFromAbove) return false;
+    return body.bottom >= pb.top - 12 && body.bottom <= pb.top + 56;
+  }
+
+  private pickupPlatformProcessCallback = (o1: object, o2: object): boolean => {
+    const s1 = o1 as Phaser.Physics.Arcade.Sprite;
+    const s2 = o2 as Phaser.Physics.Arcade.Sprite;
+    const k1 = s1.texture?.key ?? "";
+    const k2 = s2.texture?.key ?? "";
+    if (k1 === "pickup_gold" || k1 === "pickup_heart") {
+      return this.processPickupOnPlatform(s1, s2);
+    }
+    if (k2 === "pickup_gold" || k2 === "pickup_heart") {
+      return this.processPickupOnPlatform(s2, s1);
+    }
+    return false;
+  };
+
   private maybeAnnounceNewPlatform(grounded: boolean): void {
     if (!grounded || this.qteActive || this.mousePlayBusy) return;
     if (
@@ -1279,8 +1315,8 @@ export class PlayScene extends Phaser.Scene {
   }
 
   private respawnFromFall(): void {
-    this.lives -= 1;
-    this.updateHudEvents();
+    this.lives -= 1; this.events.emit("updateLives", this.lives);
+    this.updateHud();
     if (this.lives <= 0) {
       this.lives = 0;
       void this.gameOver("Fell off!");
@@ -1326,6 +1362,7 @@ export class PlayScene extends Phaser.Scene {
       this.upPressed() ||
       this.downPressed() ||
       this.keyDown(this.keySpace) ||
+      this.touchSprintDown ||
       this.keyDown(this.keyShift);
     const body = this.player.body as Phaser.Physics.Arcade.Body;
     if (
@@ -1485,10 +1522,11 @@ export class PlayScene extends Phaser.Scene {
     }
 
     this.updateLastSafePlatform();
+    this.updateHud();
     this.catchNearbyPickups();
     this.checkFallDeath();
 
-    const sprint = true; // Run by default as requested
+    const sprint = this.touchSprintDown || this.keyDown(this.keyShift);
     this.applyMoveCaps(sprint);
     this.updateLadderState();
     this.updatePlayerMovement(sprint);

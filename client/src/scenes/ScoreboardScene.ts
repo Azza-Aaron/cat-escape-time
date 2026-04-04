@@ -12,7 +12,16 @@ export class ScoreboardScene extends Phaser.Scene {
   }
 
   create(): void {
-    const { width, height } = this.scale;
+    const onResize = (): void => {
+      this.scene.restart();
+    };
+    this.scale.on("resize", onResize);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off("resize", onResize);
+    });
+
+    const width = this.scale.width;
+    const height = this.scale.height;
     const s = getMobileUiScale(this);
 
     this.add
@@ -21,7 +30,9 @@ export class ScoreboardScene extends Phaser.Scene {
         fontSize: `${Math.round(32 * s)}px`,
         color: "#f4e4bc",
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(3000);
 
     this.statusText = this.add
       .text(width / 2, height * 0.35, "Loading…", {
@@ -30,7 +41,9 @@ export class ScoreboardScene extends Phaser.Scene {
         color: "#cccccc",
         wordWrap: { width: width - 24 },
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(3000);
 
     const back = addFixedWidthMenuButton(
       this,

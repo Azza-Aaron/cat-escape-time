@@ -4,6 +4,7 @@ import { MenuScene } from "./scenes/MenuScene";
 import { ScoreboardScene } from "./scenes/ScoreboardScene";
 import { SettingsScene } from "./scenes/SettingsScene";
 import { PlayScene } from "./scenes/PlayScene";
+import { UiScene } from "./scenes/UiScene";
 
 new Phaser.Game({
   type: Phaser.AUTO,
@@ -22,8 +23,9 @@ new Phaser.Game({
       overlapBias: 10,
     },
   },
-  scene: [BootScene, MenuScene, ScoreboardScene, SettingsScene, PlayScene],
+  scene: [BootScene, MenuScene, ScoreboardScene, SettingsScene, PlayScene, UiScene],
   scale: {
+    // Desktop: FIT shows the full 960×640 frame without cropping. Mobile ENVELOP is applied in BootScene.
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
   },

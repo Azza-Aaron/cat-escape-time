@@ -1,0 +1,1417 @@
+import Phaser from "phaser";
+import {
+  playLevelMusic,
+  playSfx,
+  stopLevelMusic,
+  stopMenuMusic,
+} from "../audio/gameAudio";
+import { submitHighScore } from "../api/highScores";
+import {
+  getMobileUiScale,
+  positionScreenSpaceContainer,
+  useMobileControls,
+  getVisibleBounds,
+} from "../mobileLayout";
+import { GAME_WIDTH, PLATFORM_WIDTH } from "./BootScene";
+
+/** ~GAME_WIDTH / zoom ≈ 320 world units visible — portrait “vertical slice”. */
+const MOBILE_CAMERA_ZOOM = 3;
+
+export const PLATFORM_COUNT = 6;
+const TIMER_SECONDS = 300;
+const LIVES_START = 3;
+const TOP_WINDOW_INDICES = [3, 4, 5];
+const IFRAMES_MS = 2200;
+const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/** Procedural cat sprites are 44px tall; platform tiles 24px (`BootScene`), origin 0.5. */
+const PLAYER_TEX_HALF_H = 22;
+/** Kie sprites are 56px tall (`kie_idle` / `kie_walk` / `kie_throw`), origin 0.5. */
+const KIE_TEX_HALF_H = 28;
+/** Patrol dog / ninja dog sprites (`BootScene`), origin 0.5. */
+const DOG_TEX_HALF_H = 17;
+
+function pickupBodyHalfW(kind: "gold" | "heart"): number {
+  return kind === "gold" ? 14 : 13;
+}
+
+const KIE_HUMAN_QUOTES = [
+  "I should get some apples later.",
+  "Maybe tea and apples after this.",
+  "I should tidy this place up soon.",
+  "A quiet day would be nice for once.",
+  "Maybe I will bake an apple tart.",
+];
+
+const KIE_DEMON_QUOTES = [
+  "I am Kie the dark lord.",
+  "Bow before the dark flame!",
+  "Your hope feeds my shadow.",
+  "The abyss answers my call.",
+  "I rule this tower of fear.",
+];
+
+const DOG_QUOTES = [
+  "Bow wow",
+  "Bark Bark",
+  "Woof!",
+  "Arf arf!",
+  "Ruff ruff!",
+  "Yip yip!",
+];
+
+const NINJA_ESCAPE_QUOTES = [
+  "I'll be back!",
+  "You got lucky, cat!",
+  "Smoke and shadows!",
+  "Until next time!",
+  "This is not over!",
+];
+
+type KieMode = "human" | "monster";
+
+interface LadderSeg {
+  rect: Phaser.Geom.Rectangle;
+  fromPlat: number;
+  gfx: Phaser.GameObjects.Graphics;
+}
+
+export class PlayScene extends Phaser.Scene {
+  private level = 1;
+  private score = 0;
+  private goldTotal = 0;
+  private lives = LIVES_START;
+  private timeLeft = TIMER_SECONDS;
+  private timerEvent!: Phaser.Time.TimerEvent;
+
+  private worldW = GAME_WIDTH;
+  private worldH = 1200;
+
+  private platforms!: Phaser.Physics.Arcade.StaticGroup;
+  private platformBodies: Phaser.Physics.Arcade.Sprite[] = [];
+  private ladderZones: LadderSeg[] = [];
+  private goldOnPlatform: boolean[] = [];
+
+  private player!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
+  private kie!: Phaser.Types.Physics.Arcade.SpriteWithDynamicBody;
+  private windowSprite!: Phaser.Types.Physics.Arcade.SpriteWithStaticBody;
+  private windowOverlap?: Phaser.Physics.Arcade.Collider;
+
+  private dogs!: Phaser.Physics.Arcade.Group;
+  private ninjaDogs!: Phaser.Physics.Arcade.Group;
+  private cucumbers!: Phaser.Physics.Arcade.Group;
+  private daggers!: Phaser.Physics.Arcade.Group;
+  private pickups!: Phaser.Physics.Arcade.Group;
+
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+  private keyA!: Phaser.Input.Keyboard.Key;
+  private keyD!: Phaser.Input.Keyboard.Key;
+  private keyW!: Phaser.Input.Keyboard.Key;
+  private keyS!: Phaser.Input.Keyboard.Key;
+  private keyShift!: Phaser.Input.Keyboard.Key;
+  private keySpace!: Phaser.Input.Keyboard.Key;
+  private useMobileTouch = false;
+
+  /** Drag-pad pointer id; null when not dragging. */
+  private stickPointerId: number | null = null;
+  private stickCenterX = 0;
+  private stickCenterY = 0;
+  private readonly stickDead = 34;
+
+  private touchLeftDown = false;
+  private touchRightDown = false;
+  private touchUpDown = false;
+  private touchDownDown = false;
+  private touchSprintDown = false;
+  private touchJumpDown = false;
+  /** Previous frame stick "up" zone (for jump edge detection). */
+  private touchUpPrevJump = false;
+  /** True on the first frame the stick enters the up zone (mobile jump). */
+  private stickUpJumpEdge = false;
+  /** Ensures consumeJumpPress only succeeds once per frame (ladder + movement both call it). */
+  private jumpPressConsumed = false;
+
+  /** After jumping off a ladder, ignore ladder overlap briefly */
+  private ladderJumpGrace = 0;
+
+  private kieMode: KieMode = "human";
+  private kieTimer = 0;
+  private kieDropTimer = 0;
+  private kieThrowTimer = 0;
+
+  private spawnTimer = 0;
+  private ninjaSpawnTimer = 0;
+
+  private onLadder = false;
+
+  private invincibleUntil = 0;
+  private disgustedUntil = 0;
+  private fallInvulnUntil = 0;
+  private hairEmitter?: Phaser.GameObjects.Particles.ParticleEmitter;
+
+  private lastSafePlatIdx = 0;
+  /** Platform index the cat last "meowed" for; null until first grounded frame. */
+  private meowLastPlatformIdx: number | null = null;
+  private meowBubble?: Phaser.GameObjects.Container;
+  private kieSpeechBubble?: Phaser.GameObjects.Container;
+
+  private qteActive = false;
+  private qteLetters: string[] = [];
+  private qteIndex = 0;
+  private qteDeadline = 0;
+  private qteContainer?: Phaser.GameObjects.Container;
+  private qteText?: Phaser.GameObjects.Text;
+  /** Mobile QTE: subtitle and countdown (desktop uses single qteText). */
+  private qteHintText?: Phaser.GameObjects.Text;
+  private qteTimerLine?: Phaser.GameObjects.Text;
+  /** Scale factor used when building current QTE panel (for choice positions). */
+  private qteUiQs = 1;
+  private mobileQteChoiceTexts: Phaser.GameObjects.Text[] = [];
+  private mobileQteChoices: string[] = [];
+  private mobileQteChoiceStep = -1;
+  private mobileQteTapped?: string;
+
+  private hazardCooldownUntil = 0;
+  private gameOverHandled = false;
+
+  private letterKeys: Partial<Record<string, Phaser.Input.Keyboard.Key>> = {};
+
+  private idleMs = 0;
+  private mousePlayBusy = false;
+  private idleMouseSprite?: Phaser.GameObjects.Sprite;
+
+  private kieDropCount = 0;
+  private kiePatrolDir = 1;
+  private kieThrowUntil = 0;
+  private pickupJoyTween?: Phaser.Tweens.Tween;
+  private pickupJoyActive = false;
+  private levelTransitioning = false;
+
+  constructor() {
+    super({ key: "PlayScene" });
+  }
+
+  /** World Y for player origin so feet rest on platform top (matches one-way collider). */
+  private yStandOnPlatform(plat: Phaser.Physics.Arcade.Sprite): number {
+    const pb = plat.body as Phaser.Physics.Arcade.StaticBody;
+    const platHalf = pb.halfHeight;
+    return plat.y - platHalf - PLAYER_TEX_HALF_H;
+  }
+
+  create(): void {
+    this.level = 1;
+    this.score = 0;
+    this.goldTotal = 0;
+    this.lives = LIVES_START;
+    this.timeLeft = TIMER_SECONDS;
+    this.gameOverHandled = false;
+    this.lastSafePlatIdx = 0;
+    this.meowLastPlatformIdx = null;
+    this.useMobileTouch = useMobileControls();
+
+    stopMenuMusic();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      stopLevelMusic();
+      // Clean up event listeners to avoid double-binding on restart
+      this.events.off("touchStart");
+      this.events.off("toggleRun");
+      this.events.off("touchJump");
+    });
+
+    this.physics.world.setBounds(0, 0, this.worldW, this.worldH);
+    this.physics.world.setBoundsCollision(true, true, true, false);
+
+    this.platforms = this.physics.add.staticGroup();
+    this.dogs = this.physics.add.group({ runChildUpdate: true });
+    this.ninjaDogs = this.physics.add.group({ runChildUpdate: true });
+    this.cucumbers = this.physics.add.group();
+    this.daggers = this.physics.add.group();
+    this.pickups = this.physics.add.group({
+      collideWorldBounds: true,
+      bounceX: 0,
+      bounceY: 0.1,
+    });
+
+    this.buildLevel();
+
+    const p0 = this.platformBodies[0]!;
+    this.player = this.physics.add.sprite(
+      p0.x,
+      this.yStandOnPlatform(p0),
+      "cat_idle"
+    );
+    this.player.setDepth(6);
+    this.player.setCollideWorldBounds(true);
+    this.player.setBounce(0.05);
+    this.player.setDragX(800);
+    this.applyMoveCaps(false);
+
+    this.physics.add.collider(
+      this.player,
+      this.platforms,
+      undefined,
+      (o1, o2) =>
+        this.processOneWayPlatform(
+          o1 as Phaser.Physics.Arcade.Sprite,
+          o2 as Phaser.Physics.Arcade.Sprite
+        ),
+      this
+    );
+    this.physics.add.collider(this.dogs, this.platforms);
+    this.physics.add.collider(this.ninjaDogs, this.platforms);
+
+    this.physics.add.overlap(this.player, this.pickups, (_p, o) => {
+      this.collectPickup(o as Phaser.Physics.Arcade.Sprite);
+    });
+    this.physics.add.collider(
+      this.pickups,
+      this.platforms,
+      undefined,
+      this.pickupPlatformProcessCallback,
+      this
+    );
+
+    this.resetWindowOverlap();
+
+    this.physics.add.overlap(
+      this.player,
+      this.dogs,
+      (p, d) => this.handleDogOverlap(p as Phaser.Physics.Arcade.Sprite, d as Phaser.Physics.Arcade.Sprite),
+      undefined,
+      this
+    );
+    this.physics.add.overlap(
+      this.player,
+      this.ninjaDogs,
+      (p, d) =>
+        this.handleNinjaDogOverlap(
+          p as Phaser.Physics.Arcade.Sprite,
+          d as Phaser.Physics.Arcade.Sprite
+        ),
+      undefined,
+      this
+    );
+
+    this.physics.add.overlap(
+      this.player,
+      this.cucumbers,
+      () => this.triggerHazard("cucumber"),
+      (p) => this.canTakeDamage(p as Phaser.Physics.Arcade.Sprite),
+      this
+    );
+
+    this.physics.add.overlap(
+      this.player,
+      this.daggers,
+      () => this.triggerHazard("dagger"),
+      (p) => this.canTakeDamage(p as Phaser.Physics.Arcade.Sprite),
+      this
+    );
+
+    if (this.input.keyboard) {
+      this.cursors = this.input.keyboard.createCursorKeys();
+      this.keyA = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
+      this.keyD = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
+      this.keyW = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
+      this.keyS = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S);
+      this.keyShift = this.input.keyboard.addKey(
+        Phaser.Input.Keyboard.KeyCodes.SHIFT
+      );
+      this.keySpace = this.input.keyboard.addKey(
+        Phaser.Input.Keyboard.KeyCodes.SPACE
+      );
+      for (let i = 0; i < LETTERS.length; i++) {
+        const ch = LETTERS[i]!;
+        const code =
+          Phaser.Input.Keyboard.KeyCodes[
+            ch as keyof typeof Phaser.Input.Keyboard.KeyCodes
+          ];
+        if (typeof code === "number") {
+          this.letterKeys[ch] = this.input.keyboard.addKey(code);
+        }
+      }
+    }
+    this.timerEvent = this.time.addEvent({
+      delay: 1000,
+      loop: true,
+      callback: () => {
+        if (this.qteActive || this.gameOverHandled) return;
+        this.timeLeft -= 1;
+        this.events.emit("updateTimer", this.timeLeft);
+        if (this.timeLeft <= 0) {
+          this.timeLeft = 0;
+          this.events.emit("updateTimer", 0);
+          void this.gameOver("Time up!");
+        }
+      },
+    });
+
+    // Launch the UI Scene
+    this.scene.launch("UiScene", {
+      level: this.level,
+      score: this.score,
+      lives: this.lives,
+      timeLeft: this.timeLeft,
+      useMobileTouch: this.useMobileTouch
+    });
+
+    // Mobile Input Listeners from UiScene
+    this.events.on("touchStart", (p: { id: number, x: number, y: number, centerX: number, centerY: number }) => {
+      this.stickPointerId = p.id;
+      this.stickCenterX = p.centerX;
+      this.stickCenterY = p.centerY;
+      this.updateStickVectorFromData(p.x, p.y);
+    });
+    this.events.on("toggleRun", () => {
+      this.touchSprintDown = !this.touchSprintDown;
+      this.events.emit("syncMobileRun", this.touchSprintDown);
+    });
+    this.events.on("touchJump", () => {
+      this.touchJumpDown = true;
+    });
+
+    this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
+      if (p.id === this.stickPointerId) {
+        this.updateStickVectorFromData(p.x, p.y);
+      }
+    });
+    this.input.on("pointerup", (p: Phaser.Input.Pointer) => {
+      if (p.id === this.stickPointerId) {
+        this.stickPointerId = null;
+        this.clearStickDirections();
+      }
+    });
+
+    this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
+    this.applyPlayCamera();
+
+    playLevelMusic(this, this.level);
+  }
+
+  private updateStickVectorFromData(px: number, py: number): void {
+    if (this.qteActive) return;
+    const dx = px - this.stickCenterX;
+    const dy = py - this.stickCenterY;
+    const d = this.stickDead;
+    this.touchLeftDown = dx < -d;
+    this.touchRightDown = dx > d;
+    this.touchUpDown = dy < -d;
+    this.touchDownDown = dy > d;
+  }
+
+  private applyPlayCamera(): void {
+    const cam = this.cameras.main;
+    if (!this.player) return;
+    if (this.useMobileTouch) {
+      const zoom = window.innerWidth < 600 ? MOBILE_CAMERA_ZOOM : 2.2;
+      cam.setZoom(zoom);
+      cam.setDeadzone(0, 0);
+      cam.startFollow(this.player, true, 1, 0.14, 0, 40);
+    } else {
+      cam.setZoom(1);
+      cam.setDeadzone(120, 80);
+      cam.startFollow(this.player, true, 0.12, 0.12, 0, 0);
+    }
+  }
+
+  private keyDown(key?: Phaser.Input.Keyboard.Key): boolean {
+    return !!key?.isDown;
+  }
+
+  private justPressed(key?: Phaser.Input.Keyboard.Key): boolean {
+    return !!key && Phaser.Input.Keyboard.JustDown(key);
+  }
+
+  private leftPressed(): boolean {
+    return (
+      this.touchLeftDown ||
+      this.keyDown(this.keyA) ||
+      this.keyDown(this.cursors?.left)
+    );
+  }
+
+  private rightPressed(): boolean {
+    return (
+      this.touchRightDown ||
+      this.keyDown(this.keyD) ||
+      this.keyDown(this.cursors?.right)
+    );
+  }
+
+  private upPressed(): boolean {
+    return (
+      this.touchJumpDown ||
+      this.touchUpDown ||
+      this.keyDown(this.keyW) ||
+      this.keyDown(this.cursors?.up)
+    );
+  }
+
+  private downPressed(): boolean {
+    return (
+      this.touchDownDown ||
+      this.keyDown(this.keyS) ||
+      this.keyDown(this.cursors?.down)
+    );
+  }
+
+  private consumeJumpPress(): boolean {
+    if (this.jumpPressConsumed) return false;
+
+    const keyboardJump =
+      this.justPressed(this.keySpace) ||
+      this.justPressed(this.keyW) ||
+      this.justPressed(this.cursors?.up);
+
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    const grounded = body.blocked.down || body.touching.down;
+
+    let stickJump = false;
+    if (this.useMobileTouch && this.stickUpJumpEdge) {
+      if (this.onLadder && this.touchSprintDown) {
+        stickJump = true;
+      } else if (!this.onLadder && grounded) {
+        stickJump = true;
+      }
+    }
+
+    const result = keyboardJump || stickJump || this.touchJumpDown;
+    if (result) {
+      this.jumpPressConsumed = true;
+      this.touchJumpDown = false;
+    }
+    return result;
+  }
+
+  private clearStickDirections(): void {
+    this.touchLeftDown = false;
+    this.touchRightDown = false;
+    this.touchUpDown = false;
+    this.touchDownDown = false;
+    this.touchUpPrevJump = false;
+  }
+
+  private clearMobileQteChoices(): void {
+    this.mobileQteChoiceTexts.forEach((t) => t.destroy());
+    this.mobileQteChoiceTexts = [];
+    this.mobileQteChoices = [];
+    this.mobileQteChoiceStep = -1;
+    this.mobileQteTapped = undefined;
+  }
+
+  private ensureMobileQteChoices(): void {
+    if (!this.useMobileTouch || !this.qteContainer || !this.qteActive) return;
+    const qs = this.qteUiQs;
+    const gap = Math.round(102 * qs);
+    const fs = Math.round(36 * qs);
+    const padX = Math.round(24 * qs);
+    const padY = Math.round(14 * qs);
+    const choiceY = Math.round(38 * qs);
+    if (this.mobileQteChoiceTexts.length === 0) {
+      for (let i = 0; i < 3; i++) {
+        const choice = this.add
+          .text((i - 1) * gap, choiceY, "A", {
+            fontFamily: "sans-serif",
+            fontSize: `${fs}px`,
+            color: "#ffffff",
+            backgroundColor: "#28445a",
+            padding: { x: padX, y: padY },
+          })
+          .setOrigin(0.5)
+          .setInteractive({ useHandCursor: true });
+        choice.on("pointerdown", () => {
+          this.mobileQteTapped = this.mobileQteChoices[i];
+        });
+        this.mobileQteChoiceTexts.push(choice);
+      }
+      this.qteContainer.add(this.mobileQteChoiceTexts);
+    }
+    if (this.mobileQteChoiceStep === this.qteIndex) return;
+    const expected = this.qteLetters[this.qteIndex] ?? "A";
+    const pool = LETTERS.split("").filter((ch) => ch !== expected);
+    const decoyA = Phaser.Utils.Array.GetRandom(pool) ?? "B";
+    const decoyB = Phaser.Utils.Array.GetRandom(
+      pool.filter((ch) => ch !== decoyA)
+    ) ?? "C";
+    this.mobileQteChoices = Phaser.Utils.Array.Shuffle([expected, decoyA, decoyB]);
+    for (let i = 0; i < this.mobileQteChoiceTexts.length; i++) {
+      this.mobileQteChoiceTexts[i]!.setText(this.mobileQteChoices[i] ?? "?");
+    }
+    this.mobileQteChoiceStep = this.qteIndex;
+  }
+
+  private processOneWayPlatform(
+    p: Phaser.Physics.Arcade.Sprite,
+    pl: Phaser.Physics.Arcade.Sprite
+  ): boolean {
+    const body = p.body as Phaser.Physics.Arcade.Body;
+    const pb = pl.body as Phaser.Physics.Arcade.StaticBody;
+    if (!body || !pb) return false;
+    const idx = pl.getData("idx") as number | undefined;
+    if (typeof idx === "number" && idx >= 1 && !this.goldOnPlatform[idx - 1]) {
+      return false;
+    }
+    const overlapX = Math.min(body.right, pb.right) - Math.max(body.left, pb.left);
+    if (overlapX <= 2) return false;
+
+    const prevBottom = body.prev.y + body.height;
+    const comingFromAbove = prevBottom <= pb.top + 14;
+    if (!comingFromAbove) return false;
+    if (body.velocity.y < -8) return false;
+    return body.bottom >= pb.top - 18 && body.bottom <= pb.top + 64;
+  }
+
+  private processPickupOnPlatform(
+    pickup: Phaser.Physics.Arcade.Sprite,
+    pl: Phaser.Physics.Arcade.Sprite
+  ): boolean {
+    const body = pickup.body as Phaser.Physics.Arcade.Body;
+    const pb = pl.body as Phaser.Physics.Arcade.StaticBody;
+    if (!body || !pb) return false;
+    const overlapX = Math.min(body.right, pb.right) - Math.max(body.left, pb.left);
+    if (overlapX <= 2) return false;
+    if (body.velocity.y < -12) return false;
+    const prevBottom = body.prev.y + body.height;
+    const comingFromAbove = prevBottom <= pb.top + 12;
+    if (!comingFromAbove) return false;
+    return body.bottom >= pb.top - 12 && body.bottom <= pb.top + 56;
+  }
+
+  private pickupPlatformProcessCallback = (o1: object, o2: object): boolean => {
+    const s1 = o1 as Phaser.Physics.Arcade.Sprite;
+    const s2 = o2 as Phaser.Physics.Arcade.Sprite;
+    const k1 = s1.texture?.key ?? "";
+    const k2 = s2.texture?.key ?? "";
+    if (k1 === "pickup_gold" || k1 === "pickup_heart") {
+      return this.processPickupOnPlatform(s1, s2);
+    }
+    if (k2 === "pickup_gold" || k2 === "pickup_heart") {
+      return this.processPickupOnPlatform(s2, s1);
+    }
+    return false;
+  };
+
+  private applyMoveCaps(sprint: boolean): void {
+    const maxVx = sprint ? 520 : 340;
+    this.player.setMaxVelocity(maxVx, 800);
+  }
+
+  private refreshLadderVisibility(): void {
+    for (const seg of this.ladderZones) {
+      seg.gfx.setVisible(this.goldOnPlatform[seg.fromPlat]);
+    }
+  }
+
+  private resetWindowOverlap(): void {
+    this.windowOverlap?.destroy();
+    this.windowOverlap = this.physics.add.overlap(
+      this.player,
+      this.windowSprite,
+      () => this.tryEnterWindow()
+    );
+  }
+
+  private buildLevel(): void {
+    this.platformBodies.forEach((p) => p.destroy());
+    this.platformBodies = [];
+    this.ladderZones.forEach((l) => {
+      l.gfx.destroy();
+    });
+    this.ladderZones = [];
+    this.platforms.clear(true, true);
+    this.pickups.clear(true, true);
+    this.dogs.clear(true, true);
+    this.ninjaDogs.clear(true, true);
+    this.cucumbers.clear(true, true);
+    this.daggers.clear(true, true);
+
+    if (this.kie) this.kie.destroy();
+    if (this.windowSprite) this.windowSprite.destroy();
+
+    this.goldOnPlatform = Array(PLATFORM_COUNT).fill(false);
+
+    this.worldH = Math.max(1200, 3 * this.level * 200);
+    this.physics.world.setBounds(0, 0, this.worldW, this.worldH);
+    this.physics.world.setBoundsCollision(true, true, true, false);
+    this.cameras.main.setBounds(0, 0, this.worldW, this.worldH);
+
+    const margin = 140;
+    const usable = this.worldH - margin * 2;
+    const step = usable / (PLATFORM_COUNT + 0.5);
+    const cx = this.worldW / 2;
+
+    const py: number[] = [];
+    for (let i = 0; i < PLATFORM_COUNT; i++) {
+      py[i] = this.worldH - margin - i * step;
+    }
+
+    for (let i = 0; i < PLATFORM_COUNT; i++) {
+      const plat = this.platforms.create(cx, py[i]!, "platform") as Phaser.Physics.Arcade.Sprite;
+      plat.setData("idx", i);
+      plat.refreshBody();
+      this.platformBodies.push(plat);
+
+      if (i < PLATFORM_COUNT - 1) {
+        const pyLower = py[i]!;
+        const pyUpper = py[i + 1]!;
+        const gapTop = pyUpper + 12;
+        const gapBottom = pyLower - 12;
+        const h = Math.max(40, gapBottom - gapTop);
+        const marginX = 36;
+        const minLx = Math.round(cx - PLATFORM_WIDTH / 2 + marginX + 14);
+        const maxLx = Math.round(cx + PLATFORM_WIDTH / 2 - marginX - 14);
+        const lx = Phaser.Math.Between(minLx, maxLx);
+        const rect = new Phaser.Geom.Rectangle(lx - 14, gapTop, 28, h);
+        const gfx = this.add.graphics();
+        gfx.setDepth(1);
+        gfx.lineStyle(4, 0x8b7355);
+        gfx.strokeRect(lx - 14, gapTop, 28, h);
+        for (let yy = gapTop + 12; yy < gapBottom; yy += 20) {
+          gfx.lineStyle(3, 0xa08060);
+          gfx.beginPath();
+          gfx.moveTo(lx - 12, yy);
+          gfx.lineTo(lx + 12, yy);
+          gfx.strokePath();
+        }
+        this.ladderZones.push({ rect, fromPlat: i, gfx });
+      }
+    }
+    this.refreshLadderVisibility();
+
+    const topPlat = PLATFORM_COUNT - 1;
+    const topPlatSpr = this.platformBodies[topPlat]!;
+    const kieY = topPlatSpr.y - 12 - KIE_TEX_HALF_H;
+    this.kie = this.physics.add.sprite(cx, kieY, "kie_idle");
+    this.kie.body.setAllowGravity(false);
+    this.kie.setImmovable(true);
+    this.kie.setDepth(3);
+    this.kie.play("kie_patrol");
+    this.kiePatrolDir = 1;
+    this.kie.setFlipX(false);
+
+    const winIdx = Phaser.Math.RND.pick(TOP_WINDOW_INDICES) as number;
+    const winPlat = this.platformBodies[winIdx]!;
+    const winInset = 84;
+    const wx = Phaser.Math.Between(
+      Math.round(winPlat.x - PLATFORM_WIDTH / 2 + winInset),
+      Math.round(winPlat.x + PLATFORM_WIDTH / 2 - winInset)
+    );
+    const wy = winPlat.y - 50;
+    this.windowSprite = this.physics.add.staticSprite(wx, wy, "window");
+    this.windowSprite.refreshBody();
+    const wBody = this.windowSprite.body as Phaser.Physics.Arcade.StaticBody | undefined;
+    wBody?.setSize(62, 56);
+    this.windowSprite.setData("idx", winIdx);
+    this.windowSprite.setDepth(4);
+    if (this.player) {
+      this.resetWindowOverlap();
+    }
+
+    this.kieMode = "human";
+    this.kieTimer = this.humanDurationMs();
+    this.kieDropTimer = 1500;
+    this.kieThrowTimer = 800;
+    this.kieDropCount = 0;
+    this.kieThrowUntil = 0;
+    this.spawnTimer = this.spawnInterval();
+    this.ninjaSpawnTimer = this.ninjaSpawnInterval();
+    this.levelTransitioning = false;
+
+    const base = this.platformBodies[0];
+    if (base) this.player?.setPosition(base.x, this.yStandOnPlatform(base));
+    if (this.player) {
+      const sx = this.player.scaleX < 0 ? -1 : 1;
+      this.player.setScale(sx, 1);
+      this.player.setAlpha(1);
+      this.player.setVisible(true);
+      this.player.setDepth(6);
+    }
+    this.invincibleUntil = 0;
+    this.lastSafePlatIdx = 0;
+    this.meowLastPlatformIdx = null;
+    this.clearMeowBubble();
+    this.clearKieSpeechBubble();
+    this.clearIdleMousePlay();
+    this.ladderJumpGrace = 0;
+  }
+
+  private threatBand(): "low" | "mid" | "high" {
+    const idx = this.platformIndexForY(this.player?.y ?? this.worldH);
+    if (idx <= 1) return "low";
+    if (idx >= 4) return "high";
+    return "mid";
+  }
+
+  private onKieModeChanged(): void {
+    if (this.kieMode === "human") {
+      playSfx(this, "sfx_kie_human", 0.5);
+      this.showKieSpeechBubble(
+        Phaser.Utils.Array.GetRandom(KIE_HUMAN_QUOTES) ?? KIE_HUMAN_QUOTES[0]!
+      );
+    } else {
+      playSfx(this, "sfx_kie_demon", 0.55);
+      this.showKieSpeechBubble(
+        Phaser.Utils.Array.GetRandom(KIE_DEMON_QUOTES) ?? KIE_DEMON_QUOTES[0]!
+      );
+    }
+  }
+
+  private humanDurationMs(): number {
+    const band = this.threatBand();
+    if (band === "low") return 9800;
+    if (band === "high") return 3200;
+    return 5600;
+  }
+
+  private monsterDurationMs(): number {
+    const band = this.threatBand();
+    if (band === "low") return 3200;
+    if (band === "high") return 9800;
+    return 5600;
+  }
+
+  private spawnInterval(): number {
+    const t = 1 - this.timeLeft / TIMER_SECONDS;
+    const baseStart = 20000;
+    const baseEnd = 9500;
+    const fromTime = baseStart - t * (baseStart - baseEnd);
+    const levelBoost = Math.max(0, this.level - 1) * 750;
+    return Math.max(1100, fromTime - levelBoost);
+  }
+
+  private ninjaSpawnInterval(): number {
+    const t = 1 - this.timeLeft / TIMER_SECONDS;
+    const baseStart = 16000;
+    const baseEnd = 7000;
+    const fromTime = baseStart - t * (baseStart - baseEnd);
+    const levelBoost = Math.max(0, this.level - 1) * 900;
+    return Math.max(2400, fromTime - levelBoost);
+  }
+
+  private advanceLevel(): void {
+    this.level += 1;
+    this.score += 1000;
+    this.timeLeft = Math.min(TIMER_SECONDS, this.timeLeft + 60);
+    this.levelTransitioning = true;
+
+    this.events.emit("updateScore", this.score);
+    this.events.emit("updateLives", this.lives);
+    this.events.emit("updateLevel", this.level);
+    this.events.emit("updatePlatform", 1);
+
+    this.tweens.add({
+      targets: this.player,
+      alpha: 0,
+      duration: 500,
+      onComplete: () => {
+        this.buildLevel();
+        this.applyPlayCamera();
+      },
+    });
+  }
+
+  private platformIndexForY(y: number): number {
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < this.platformBodies.length; i++) {
+      const pY = this.platformBodies[i]!.y;
+      const d = Math.abs(y - pY);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
+  update(time: number, delta: number): void {
+    if (this.gameOverHandled || this.levelTransitioning) return;
+
+    if (this.qteActive) {
+      if (this.mobileQteTapped) {
+        this.handleLetterInput(this.mobileQteTapped);
+        this.mobileQteTapped = undefined;
+      } else {
+        for (const [ch, key] of Object.entries(this.letterKeys)) {
+          if (Phaser.Input.Keyboard.JustDown(key!)) {
+            this.handleLetterInput(ch);
+            break;
+          }
+        }
+      }
+      if (time > this.qteDeadline) {
+        this.completeQte(false);
+      } else {
+        this.refreshQteDisplay();
+      }
+      return;
+    }
+
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    const grounded = body.blocked.down || body.touching.down;
+    const movingX = Math.abs(body.velocity.x) > 10;
+
+    const platIdx = this.platformIndexForY(this.player.y);
+    this.events.emit("updatePlatform", platIdx + 1);
+
+    if (grounded) {
+      this.lastSafePlatIdx = platIdx;
+      if (this.meowLastPlatformIdx !== platIdx) {
+        this.meowLastPlatformIdx = platIdx;
+        this.showMeowBubble();
+      }
+    }
+
+    this.updateStickJumpState();
+
+    this.onLadder = false;
+    if (this.ladderJumpGrace > 0) {
+      this.ladderJumpGrace -= delta;
+    } else {
+      const px = this.player.x;
+      const py = this.player.y;
+      for (const seg of this.ladderZones) {
+        if (this.goldOnPlatform[seg.fromPlat] && Phaser.Geom.Rectangle.Contains(seg.rect, px, py)) {
+          this.onLadder = true;
+          break;
+        }
+      }
+    }
+
+    const sprint = this.leftPressed() || this.rightPressed() ? (this.keyShift.isDown || this.touchSprintDown) : false;
+    this.applyMoveCaps(sprint);
+
+    if (this.onLadder) {
+      body.setAllowGravity(false);
+      if (this.upPressed()) {
+        body.setVelocityY(-220);
+      } else if (this.downPressed()) {
+        body.setVelocityY(220);
+      } else {
+        body.setVelocityY(0);
+      }
+      if (this.consumeJumpPress()) {
+        body.setAllowGravity(true);
+        body.setVelocityY(-460);
+        this.ladderJumpGrace = 400;
+        this.onLadder = false;
+      }
+    } else {
+      body.setAllowGravity(true);
+      if (this.consumeJumpPress() && grounded) {
+        body.setVelocityY(-460);
+        playSfx(this, "sfx_jump", 0.25);
+      }
+    }
+
+    const acc = grounded ? 1400 : 700;
+    if (this.leftPressed()) {
+      body.setAccelerationX(-acc);
+      this.player.setFlipX(true);
+    } else if (this.rightPressed()) {
+      body.setAccelerationX(acc);
+      this.player.setFlipX(false);
+    } else {
+      body.setAccelerationX(0);
+    }
+
+    this.jumpPressConsumed = false;
+
+    this.updateKie(delta);
+    this.updateSpawns(delta);
+
+    if (this.invincibleUntil > time) {
+      this.player.setAlpha(Math.sin(time * 0.04) * 0.2 + 0.6);
+    } else {
+      this.player.setAlpha(1);
+    }
+
+    if (this.disgustedUntil > 0 && time > this.disgustedUntil) {
+      this.setDisgusted(false);
+      this.disgustedUntil = 0;
+    }
+
+    if (movingX || !grounded || body.velocity.y !== 0) {
+      this.clearIdleMousePlay();
+    } else {
+      this.updateIdleMouse(delta);
+    }
+
+    this.updateCatAnimation({ grounded, moving: movingX, climbing: this.onLadder, sprint });
+  }
+
+  private updateStickJumpState(): void {
+    if (!this.useMobileTouch) return;
+    const isUp = this.touchUpDown;
+    this.stickUpJumpEdge = isUp && !this.touchUpPrevJump;
+    this.touchUpPrevJump = isUp;
+  }
+
+  private updateCatAnimation(s: {
+    grounded: boolean;
+    moving: boolean;
+    climbing: boolean;
+    sprint: boolean;
+  }): void {
+    if (s.climbing) {
+      this.player.play("cat_climb", true);
+      return;
+    }
+    if (!s.grounded) {
+      this.player.play("cat_jump", true);
+      return;
+    }
+    if (s.moving) {
+      this.player.play(s.sprint ? "cat_run" : "cat_walk", true);
+    } else {
+      this.player.play("cat_idle", true);
+    }
+  }
+
+  private updateKie(delta: number): void {
+    this.kieTimer -= delta;
+    if (this.kieTimer <= 0) {
+      this.kieMode = this.kieMode === "human" ? "monster" : "human";
+      this.kieTimer = this.kieMode === "human" ? this.humanDurationMs() : this.monsterDurationMs();
+      this.onKieModeChanged();
+    }
+
+    const cx = this.worldW / 2;
+    const limit = PLATFORM_WIDTH / 2 - 40;
+    this.kie.x += this.kiePatrolDir * 1.8;
+    if (this.kie.x > cx + limit) {
+      this.kie.x = cx + limit;
+      this.kiePatrolDir = -1;
+      this.kie.setFlipX(true);
+    } else if (this.kie.x < cx - limit) {
+      this.kie.x = cx - limit;
+      this.kiePatrolDir = 1;
+      this.kie.setFlipX(false);
+    }
+
+    if (this.kieMode === "human") {
+      this.kieDropTimer -= delta;
+      if (this.kieDropTimer <= 0) {
+        this.kieDropCount += 1;
+        this.spawnGoldAtKie();
+        this.kieDropTimer = this.kieDropCount % 4 === 0 ? 3500 : 1800;
+        if (this.level >= 2 && Phaser.Math.Between(1, 10) > 7) {
+          this.time.delayedCall(400, () => this.spawnHeartAtKie());
+        }
+      }
+    } else {
+      this.kieThrowTimer -= delta;
+      if (this.kieThrowTimer <= 0) {
+        this.spawnDaggerAtKie();
+        this.kieThrowTimer = 1100 - Math.min(500, (this.level - 1) * 100);
+        this.kieThrowUntil = this.time.now + 400;
+      }
+    }
+  }
+
+  private updateSpawns(delta: number): void {
+    this.spawnTimer -= delta;
+    if (this.spawnTimer <= 0) {
+      this.spawnDog();
+      this.spawnTimer = this.spawnInterval();
+    }
+    this.ninjaSpawnTimer -= delta;
+    if (this.ninjaSpawnTimer <= 0) {
+      this.spawnNinjaDog();
+      this.ninjaSpawnTimer = this.ninjaSpawnInterval();
+    }
+  }
+
+  private spawnGoldAtKie(): void {
+    const gold = this.pickups.create(this.kie.x, this.kie.y, "pickup_gold") as Phaser.Physics.Arcade.Sprite;
+    gold.setScale(0.8);
+    gold.setBounce(0.12);
+    gold.setVelocity(Phaser.Math.Between(-100, 100), -150);
+  }
+
+  private spawnHeartAtKie(): void {
+    const heart = this.pickups.create(this.kie.x, this.kie.y, "pickup_heart") as Phaser.Physics.Arcade.Sprite;
+    heart.setScale(0.75);
+    heart.setVelocity(Phaser.Math.Between(-120, 120), -200);
+  }
+
+  private spawnDaggerAtKie(): void {
+    const dagger = this.daggers.create(this.kie.x, this.kie.y, "dagger") as Phaser.Physics.Arcade.Sprite;
+    dagger.setScale(0.7);
+    dagger.setAngle(this.kiePatrolDir > 0 ? 45 : -45);
+    this.physics.moveToObject(dagger, this.player, 320 + this.level * 15);
+    playSfx(this, "sfx_throw", 0.3);
+  }
+
+  private spawnDog(): void {
+    const side = Phaser.Math.RND.pick(["left", "right"]);
+    const x = side === "left" ? -40 : this.worldW + 40;
+    const y = this.worldH - 120;
+    const dog = this.dogs.create(x, y, "dog_walk") as Phaser.Physics.Arcade.Sprite;
+    dog.setCollideWorldBounds(false);
+    dog.setData("side", side);
+    dog.play("dog_walk_anim");
+    dog.setFlipX(side === "right");
+    dog.setVelocityX(side === "left" ? 140 : -140);
+  }
+
+  private spawnNinjaDog(): void {
+    const side = Phaser.Math.RND.pick(["left", "right"]);
+    const x = side === "left" ? -40 : this.worldW + 40;
+    const y = this.worldH - marginYForNinja();
+    const ninja = this.ninjaDogs.create(x, y, "dog_ninja") as Phaser.Physics.Arcade.Sprite;
+    ninja.play("ninja_walk_anim");
+    ninja.setFlipX(side === "right");
+    ninja.setVelocityX(side === "left" ? 220 : -220);
+
+    function marginYForNinja(): number {
+      const platIdx = Phaser.Math.Between(0, 3);
+      return 140 + platIdx * 160;
+    }
+  }
+
+  private handleDogOverlap(player: Phaser.Physics.Arcade.Sprite, dog: Phaser.Physics.Arcade.Sprite): void {
+    if (this.invincibleUntil > this.time.now) return;
+    const pBody = player.body as Phaser.Physics.Arcade.Body;
+    const dBody = dog.body as Phaser.Physics.Arcade.Body;
+    const isAbove = pBody.bottom < dBody.top + 14 && pBody.velocity.y > 0;
+    if (isAbove) {
+      player.setVelocityY(-350);
+      this.score += 200;
+      this.events.emit("updateScore", this.score);
+      this.spawnMeowAt(dog.x, dog.y, Phaser.Math.RND.pick(DOG_QUOTES));
+      dog.destroy();
+      playSfx(this, "sfx_pickup", 0.3);
+    } else {
+      this.triggerHazard("dog");
+    }
+  }
+
+  private handleNinjaDogOverlap(player: Phaser.Physics.Arcade.Sprite, ninja: Phaser.Physics.Arcade.Sprite): void {
+    if (this.invincibleUntil > this.time.now) return;
+    const pBody = player.body as Phaser.Physics.Arcade.Body;
+    const nBody = ninja.body as Phaser.Physics.Arcade.Body;
+    const isAbove = pBody.bottom < nBody.top + 18 && pBody.velocity.y > 0;
+    if (isAbove) {
+      player.setVelocityY(-400);
+      this.score += 500;
+      this.events.emit("updateScore", this.score);
+      this.spawnMeowAt(ninja.x, ninja.y, Phaser.Math.RND.pick(NINJA_ESCAPE_QUOTES));
+      ninja.destroy();
+      playSfx(this, "sfx_pickup", 0.35);
+    } else {
+      this.triggerHazard("ninja");
+    }
+  }
+
+  private collectPickup(p: Phaser.Physics.Arcade.Sprite): void {
+    const key = p.texture.key;
+    if (key === "pickup_gold") {
+      this.score += 100;
+      this.goldTotal += 1;
+      this.events.emit("updateScore", this.score);
+      const idx = this.platformIndexForY(p.y);
+      if (idx >= 0 && idx < PLATFORM_COUNT) {
+        this.goldOnPlatform[idx] = true;
+        this.refreshLadderVisibility();
+      }
+      playSfx(this, "sfx_pickup", 0.3);
+    } else if (key === "pickup_heart") {
+      this.lives = Math.min(5, this.lives + 1);
+      this.events.emit("updateLives", this.lives);
+      playSfx(this, "sfx_pickup", 0.4);
+    }
+    p.destroy();
+  }
+
+  private canTakeDamage(p: Phaser.Physics.Arcade.Sprite): boolean {
+    return !this.gameOverHandled && !this.qteActive && this.invincibleUntil < this.time.now;
+  }
+
+  private triggerHazard(kind: string): void {
+    if (this.hazardCooldownUntil > this.time.now) return;
+    if (this.qteActive || this.gameOverHandled) return;
+    if (!this.canTakeDamage(this.player)) return;
+    this.startQte();
+  }
+
+  private startQte(): void {
+    if (this.qteActive) return;
+    this.clearStickDirections();
+    this.qteActive = true;
+    playSfx(this, "sfx_qte", 0.5);
+    this.clearIdleMousePlay();
+    this.clearMeowBubble();
+    this.player.anims.stop();
+    this.physics.world.pause();
+    this.timerEvent.paused = true;
+
+    this.qteLetters = [0, 1, 2].map(() => LETTERS.charAt(Phaser.Math.Between(0, LETTERS.length - 1)));
+    this.qteIndex = 0;
+    this.qteDeadline = this.time.now + this.qteStepMs();
+    this.qteContainer = this.add.container(0, 0);
+
+    const qs = Math.min(getMobileUiScale(this), 1.35);
+    this.qteUiQs = qs;
+    const bgW = Math.round(420 * qs);
+    const bgH = this.useMobileTouch ? Math.round(268 * qs) : Math.round(200 * qs);
+    const bg = this.add.rectangle(0, 0, bgW, bgH, 0x111122, 0.92);
+    bg.setStrokeStyle(3, 0x88ff88);
+
+    if (this.useMobileTouch) {
+      this.qteHintText = this.add.text(0, -bgH / 2 + Math.round(22 * qs), "Tap the matching letter", {
+        fontFamily: "sans-serif",
+        fontSize: `${Math.round(17 * qs)}px`,
+        color: "#b8c0d8",
+      }).setOrigin(0.5);
+      this.qteText = this.add.text(0, -bgH / 2 + Math.round(78 * qs), "", {
+        fontFamily: "Georgia, serif",
+        fontSize: `${Math.round(64 * qs)}px`,
+        color: "#ffffff",
+        fontStyle: "bold",
+      }).setOrigin(0.5);
+      this.qteTimerLine = this.add.text(0, bgH / 2 - Math.round(28 * qs), "", {
+        fontFamily: "monospace",
+        fontSize: `${Math.round(22 * qs)}px`,
+        color: "#ffd980",
+      }).setOrigin(0.5);
+      this.qteContainer.add([bg, this.qteHintText, this.qteText, this.qteTimerLine]);
+    } else {
+      this.qteText = this.add.text(0, 0, "", {
+        fontSize: `${Math.round(36 * qs)}px`,
+        color: "#ffffff",
+        fontFamily: "monospace",
+      }).setOrigin(0.5);
+      this.qteContainer.add([bg, this.qteText]);
+    }
+
+    positionScreenSpaceContainer(this, this.qteContainer, { depth: 2000 });
+    this.setDisgusted(true);
+    this.spawnHairEffect();
+    this.refreshQteDisplay();
+    this.ensureMobileQteChoices();
+  }
+
+  private qteStepMs(): number {
+    return Math.max(800, 2400 - (this.level - 1) * 150);
+  }
+
+  private refreshQteDisplay(): void {
+    if (!this.qteText) return;
+    const cur = this.qteLetters[this.qteIndex] ?? "?";
+    const rest = this.qteLetters.slice(this.qteIndex + 1).join(" ");
+    const sec = Math.max(0, Math.ceil((this.qteDeadline - this.time.now) / 1000));
+    if (this.useMobileTouch) {
+      this.qteText.setText(cur);
+      this.qteTimerLine?.setText(`${sec}s`);
+    } else {
+      this.qteText.setText(`Press: ${cur}\nNext: ${rest}\n\n${sec}s`);
+    }
+  }
+
+  private handleLetterInput(input: string): void {
+    if (!this.qteActive) return;
+    if (input.toUpperCase() === this.qteLetters[this.qteIndex]) {
+      this.qteIndex += 1;
+      if (this.qteIndex >= this.qteLetters.length) {
+        this.completeQte(true);
+      } else {
+        this.qteDeadline = this.time.now + this.qteStepMs();
+        this.refreshQteDisplay();
+        this.ensureMobileQteChoices();
+      }
+    } else {
+      this.completeQte(false);
+    }
+  }
+
+  private completeQte(success: boolean): void {
+    this.qteActive = false;
+    this.physics.world.resume();
+    this.timerEvent.paused = false;
+    this.qteContainer?.destroy();
+    this.qteContainer = undefined;
+    this.clearMobileQteChoices();
+    this.setDisgusted(false);
+    this.hazardCooldownUntil = this.time.now + 700;
+
+    if (success) {
+      this.invincibleUntil = this.time.now + IFRAMES_MS;
+      this.player.setAlpha(0.65);
+      this.time.delayedCall(IFRAMES_MS, () => this.player.setAlpha(1));
+      playSfx(this, "sfx_pickup", 0.28);
+    } else {
+      playSfx(this, "sfx_fail", 0.45);
+      this.lives -= 1;
+      this.events.emit("updateLives", this.lives);
+      if (this.lives <= 0) {
+        this.lives = 0;
+        void this.gameOver("No lives left");
+      }
+    }
+  }
+
+  private async gameOver(reason: string): Promise<void> {
+    if (this.gameOverHandled) return;
+    this.gameOverHandled = true;
+    this.physics.pause();
+    this.timerEvent.destroy();
+    stopLevelMusic();
+    playSfx(this, "sfx_game_over", 0.6);
+
+    try {
+      await submitHighScore(this.score);
+    } catch (e) {
+      console.warn("Score submit fail", e);
+    }
+
+    this.scene.stop("UiScene");
+    this.scene.start("ScoreboardScene", { score: this.score, reason });
+  }
+
+  private tryEnterWindow(): void {
+    const idx = this.windowSprite.getData("idx") as number;
+    if (this.onLadder) return;
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    const winBody = this.windowSprite.body as Phaser.Physics.Arcade.StaticBody;
+    const overlapX = Math.min(body.right, winBody.right) - Math.max(body.left, winBody.left);
+    if (overlapX < 24) return;
+    if (this.goldOnPlatform[idx] && this.upPressed()) {
+      this.advanceLevel();
+    }
+  }
+
+  private spawnHairEffect(): void {
+    if (this.hairEmitter) {
+      this.hairEmitter.stop();
+      this.hairEmitter.destroy();
+    }
+    const p = this.add.particles(this.player.x, this.player.y - 20, "particle_hair", {
+      speed: { min: 40, max: 120 },
+      angle: { min: 0, max: 360 },
+      scale: { start: 0.8, end: 0 },
+      alpha: { start: 1, end: 0.2 },
+      lifespan: 600,
+      gravityY: 100,
+      frequency: 40,
+    });
+    p.setDepth(10);
+    this.hairEmitter = p;
+    this.time.delayedCall(400, () => p.stop());
+  }
+
+  private showMeowBubble(): void {
+    this.clearMeowBubble();
+    const bubble = this.add.container(this.player.x, this.player.y - 50);
+    const bg = this.add.rectangle(0, 0, 70, 30, 0xffffff, 0.9);
+    bg.setStrokeStyle(2, 0x444444);
+    const txt = this.add.text(0, -1, "Meow?", {
+      fontFamily: "sans-serif",
+      fontSize: "14px",
+      color: "#333333",
+    }).setOrigin(0.5);
+    bubble.add([bg, txt]);
+    bubble.setDepth(20);
+    this.meowBubble = bubble;
+    this.tweens.add({
+      targets: bubble,
+      y: "-=20",
+      alpha: 0,
+      duration: 1800,
+      onComplete: () => bubble.destroy(),
+    });
+  }
+
+  private spawnMeowAt(x: number, y: number, text: string): void {
+    const bubble = this.add.container(x, y - 50);
+    const txt = this.add.text(0, 0, text, {
+      fontFamily: "monospace",
+      fontSize: "16px",
+      color: "#ffff00",
+      stroke: "#000000",
+      strokeThickness: 3,
+    }).setOrigin(0.5);
+    bubble.add(txt);
+    bubble.setDepth(25);
+    this.tweens.add({
+      targets: bubble,
+      y: "-=50",
+      alpha: 0,
+      duration: 1500,
+      onComplete: () => bubble.destroy(),
+    });
+  }
+
+  private showKieSpeechBubble(text: string): void {
+    this.clearKieSpeechBubble();
+    const bubble = this.add.container(this.kie.x, this.kie.y - 60);
+    const txt = this.add.text(0, 0, text, {
+      fontFamily: "Georgia, serif",
+      fontSize: "15px",
+      color: "#ffffff",
+      backgroundColor: "#000000aa",
+      padding: { x: 8, y: 4 },
+    }).setOrigin(0.5);
+    bubble.add(txt);
+    bubble.setDepth(20);
+    this.kieSpeechBubble = bubble;
+    this.time.delayedCall(3000, () => {
+      this.tweens.add({ targets: bubble, alpha: 0, duration: 500, onComplete: () => bubble.destroy() });
+    });
+  }
+
+  private clearMeowBubble(): void {
+    this.meowBubble?.destroy();
+    this.meowBubble = undefined;
+  }
+
+  private clearKieSpeechBubble(): void {
+    this.kieSpeechBubble?.destroy();
+    this.kieSpeechBubble = undefined;
+  }
+
+  private setDisgusted(on: boolean): void {
+    if (on) {
+      this.disgustedUntil = this.time.now + 8000;
+      this.player.setTint(0x88ff88);
+    } else {
+      this.player.clearTint();
+      this.disgustedUntil = 0;
+    }
+  }
+
+  private updateIdleMouse(delta: number): void {
+    this.idleMs += delta;
+    if (this.idleMs > 6000 && !this.mousePlayBusy) {
+      this.startMousePlay();
+    }
+  }
+
+  private startMousePlay(): void {
+    this.mousePlayBusy = true;
+    const body = this.player.body as Phaser.Physics.Arcade.Body;
+    const side = this.player.flipX ? -1 : 1;
+    const mx = this.player.x + 120 * side;
+    const my = this.player.y + 10;
+    this.idleMouseSprite = this.add.sprite(mx, my, "dog_walk").setScale(0.4);
+    this.idleMouseSprite.setFlipX(side > 0);
+    this.tweens.add({
+      targets: this.idleMouseSprite,
+      x: this.player.x + 30 * side,
+      duration: 1200,
+      onComplete: () => {
+        if (!this.mousePlayBusy) return;
+        this.time.delayedCall(1000, () => {
+          this.tweens.add({ targets: this.idleMouseSprite, alpha: 0, duration: 400, onComplete: () => this.clearIdleMousePlay() });
+        });
+      },
+    });
+  }
+
+  private clearIdleMousePlay(): void {
+    this.idleMs = 0;
+    this.mousePlayBusy = false;
+    this.idleMouseSprite?.destroy();
+    this.idleMouseSprite = undefined;
+  }
+}

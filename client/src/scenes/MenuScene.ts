@@ -10,7 +10,16 @@ export class MenuScene extends Phaser.Scene {
   }
 
   create(): void {
-    const { width, height } = this.scale;
+    const onResize = (): void => {
+      this.scene.restart();
+    };
+    this.scale.on("resize", onResize);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off("resize", onResize);
+    });
+
+    const width = this.scale.width;
+    const height = this.scale.height;
     const s = getMobileUiScale(this);
     const narrow = width < 640;
     const cx = width / 2;
@@ -27,7 +36,9 @@ export class MenuScene extends Phaser.Scene {
         fontSize: `${Math.round(40 * s)}px`,
         color: "#f4e4bc",
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(3000);
 
     y += Math.round(56 * s);
     this.add
@@ -38,7 +49,9 @@ export class MenuScene extends Phaser.Scene {
         wordWrap: { width: width - 24 },
         align: "center",
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(3000);
 
     y += Math.round(40 * s);
 

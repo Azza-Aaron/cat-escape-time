@@ -13,12 +13,14 @@ export function startCatMouseDemo(
 ): void {
   const cat = scene.add.sprite(anchorX, anchorY, "cat_boot_sit_0");
   cat.setScale(catScale);
-  cat.setDepth(5);
+  cat.setScrollFactor(0);
+  cat.setDepth(3001);
   cat.play({ key: "cat_boot_wag", repeat: -1 });
 
   const mouse = scene.add.sprite(anchorX + 120, anchorY + 14, "mouse");
   mouse.setScale(1.35 * catScale * 0.88);
-  mouse.setDepth(6);
+  mouse.setScrollFactor(0);
+  mouse.setDepth(3002);
   mouse.setVisible(false);
 
   const mouseRestX = anchorX + 44;

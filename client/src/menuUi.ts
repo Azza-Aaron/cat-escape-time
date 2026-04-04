@@ -31,12 +31,15 @@ export function addFixedWidthMenuButton(
       padding: { x: 8, y: py },
     })
     .setOrigin(0.5)
-    .setInteractive({ useHandCursor: true });
+    .setInteractive({ useHandCursor: true })
+    .setScrollFactor(0)
+    .setDepth(3000);
   t.on("pointerover", () => t.setStyle({ backgroundColor: style.bgHover }));
   t.on("pointerout", () => t.setStyle({ backgroundColor: style.bg }));
   return t;
 }
 
 export function menuButtonWidth(scene: Phaser.Scene): number {
-  return Math.min(scene.scale.width - 32, 320);
+  const w = scene.scale.width;
+  return Math.min(w - 32, 320);
 }

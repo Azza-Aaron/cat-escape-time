@@ -15,7 +15,16 @@ export class SettingsScene extends Phaser.Scene {
   }
 
   create(): void {
-    const { width, height } = this.scale;
+    const onResize = (): void => {
+      this.scene.restart();
+    };
+    this.scale.on("resize", onResize);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.scale.off("resize", onResize);
+    });
+
+    const width = this.scale.width;
+    const height = this.scale.height;
     const s = getMobileUiScale(this);
     const cx = width / 2;
     const btnW = menuButtonWidth(this);
@@ -31,7 +40,9 @@ export class SettingsScene extends Phaser.Scene {
         fontSize: `${Math.round(36 * s)}px`,
         color: "#f4e4bc",
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(3000);
 
     y += Math.round(56 * s);
     this.add
@@ -40,7 +51,9 @@ export class SettingsScene extends Phaser.Scene {
         fontSize: `${Math.round(20 * s)}px`,
         color: "#aaaaaa",
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(3000);
 
     y += Math.round(48 * s);
 
